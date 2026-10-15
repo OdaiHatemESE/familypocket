@@ -1,11 +1,11 @@
 import * as Haptics from 'expo-haptics';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Platform, Pressable, TextInput, View } from 'react-native';
-import { useStore } from '../store';
+import { useFamily } from '../family';
 import { C, F, TS } from '../theme';
 import { Expense } from '../types';
-import { CatTile, HScroll, Icon, PrimaryButton, Row, T } from '../ui';
-import { shortDay, toKey } from '../utils';
+import { Avatar, CatTile, HScroll, Icon, Money, PrimaryButton, Row, T } from '../ui';
+import { dayLabel, shortDay, toKey } from '../utils';
 import { Sheet } from './Sheet';
 
 const tap = () => {
@@ -21,24 +21,24 @@ const lastDays = (n: number) =>
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'];
 
-export function ExpenseSheet({ visible, onClose, editing }: { visible: boolean; onClose: () => void; editing?: Expense | null }) {
-  const { categories, addExpense, updateExpense, deleteExpense } = useStore();
-  const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
-  const [catId, setCatId] = useState('');
-  const [date, setDate] = useState(toKey(new Date()));
+type Props = { visible: boolean; onClose: () => void; editing?: Expense | null };
+
+/** Mounted fresh each time it opens, so the form always starts from `editing` */
+export function ExpenseSheet(props: Props) {
+  if (!props.visible) return null;
+  return <ExpenseForm key={props.editing?.id ?? 'new'} {...props} />;
+}
+
+function ExpenseForm({ visible, onClose, editing }: Props) {
+  const { categories, me, memberOf, addExpense, updateExpense, deleteExpense } = useFamily();
+  const [busy, setBusy] = useState(false);
+  const readOnly = !!editing && editing.userId !== me?.id;
+  const [amount, setAmount] = useState(editing ? String(editing.amount) : '');
+  const [note, setNote] = useState(editing?.note ?? '');
+  const [catId, setCatId] = useState(editing?.categoryId ?? '');
+  const [date, setDate] = useState(editing?.date ?? toKey(new Date()));
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  useEffect(() => {
-    if (!visible) return;
-    setError('');
-    setConfirmDelete(false);
-    setAmount(editing ? String(editing.amount) : '');
-    setNote(editing?.note ?? '');
-    setCatId(editing?.categoryId ?? '');
-    setDate(editing?.date ?? toKey(new Date()));
-  }, [visible, editing]);
 
   const days = lastDays(14);
   if (editing && !days.includes(editing.date)) days.push(editing.date);
@@ -56,16 +56,56 @@ export function ExpenseSheet({ visible, onClose, editing }: { visible: boolean; 
     });
   };
 
-  const save = () => {
+  const save = async () => {
     const n = parseFloat(amount);
     if (!(n > 0)) return setError('اكتب المبلغ أولاً');
     if (!catId) return setError('اختر تصنيف المصروف');
-    const data = { amount: n, note: note.trim(), categoryId: catId, date };
-    if (editing) updateExpense({ ...editing, ...data });
-    else addExpense(data);
-    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    onClose();
+    const data = { amount: n, note: note.trim(), categoryId: catId, date, fixedId: editing?.fixedId ?? null };
+    setBusy(true);
+    try {
+      if (editing) await updateExpense(editing.id, data);
+      else await addExpense(data);
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
   };
+
+  const remove = async () => {
+    if (!editing) return;
+    if (!confirmDelete) return setConfirmDelete(true);
+    setBusy(true);
+    try {
+      await deleteExpense(editing.id);
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  if (readOnly && editing) {
+    const owner = memberOf(editing.userId);
+    const cat = categories.find((c) => c.id === editing.categoryId);
+    return (
+      <Sheet visible={visible} onClose={onClose} title="تفاصيل المصروف">
+        <View style={{ alignItems: 'center', paddingVertical: 12, gap: 10 }}>
+          <CatTile icon={cat?.icon ?? 'help'} color={cat?.color ?? C.faint} size={56} />
+          <Money value={editing.amount} size={40} w="bold" decimals />
+          <T w="medium" align="center">{editing.note || cat?.name}</T>
+          <T size={TS.small} color={C.sub} align="center">{cat?.name}، {dayLabel(editing.date)}</T>
+        </View>
+        <Row style={{ backgroundColor: C.paper, borderRadius: 14, padding: 12, gap: 10, marginTop: 8, marginBottom: 12 }}>
+          <Avatar name={owner?.displayName ?? '؟'} color={owner?.color ?? C.faint} size={32} />
+          <T size={TS.small} color={C.sub} style={{ flex: 1 }}>
+            سجّله {owner?.displayName ?? 'عضو سابق'}. صاحب المصروف بس بيقدر يعدّله أو يحذفه.
+          </T>
+        </Row>
+      </Sheet>
+    );
+  }
 
   const display = amount ? Number(amount.split('.')[0]).toLocaleString('en-US') + (amount.includes('.') ? '.' + amount.split('.')[1] : '') : '0';
 
@@ -77,12 +117,9 @@ export function ExpenseSheet({ visible, onClose, editing }: { visible: boolean; 
       footer={
         <View>
           {!!error && <T size={TS.small} color={C.pom} align="center" style={{ marginBottom: 8 }}>{error}</T>}
-          <PrimaryButton label={editing ? 'حفظ التعديل' : 'سجّل المصروف'} onPress={save} />
+          <PrimaryButton label={editing ? 'حفظ التعديل' : 'سجّل المصروف'} onPress={save} busy={busy} />
           {editing && (
-            <Pressable
-              onPress={() => (confirmDelete ? (deleteExpense(editing.id), onClose()) : setConfirmDelete(true))}
-              style={{ paddingVertical: 12 }}
-            >
+            <Pressable onPress={remove} disabled={busy} style={{ paddingVertical: 12 }}>
               <T size={TS.small} w="medium" color={C.pom} align="center">
                 {confirmDelete ? 'اضغط مرة ثانية لتأكيد الحذف' : 'حذف المصروف'}
               </T>

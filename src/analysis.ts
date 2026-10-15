@@ -1,4 +1,4 @@
-import { Category, Expense } from './types';
+import { Category, Expense, FixedExpense, Member } from './types';
 import { AR_DAYS, daysInMonth, fmt, monthKey, monthName, shiftMonth } from './utils';
 
 export type CategoryStat = {
@@ -11,6 +11,15 @@ export type CategoryStat = {
   status: 'ok' | 'warning' | 'over';
 };
 
+export type FixedStatus = {
+  fixed: FixedExpense;
+  paid: boolean;
+  overdue: boolean; // due day passed this month and still unpaid
+  dueDate: string; // YYYY-MM-DD in this month (clamped to month length)
+};
+
+export type MemberStat = { member: Member | null; userId: string | null; spent: number; count: number };
+
 export type Insight = { tone: 'good' | 'warn' | 'bad' | 'info'; text: string };
 
 export type MonthAnalysis = {
@@ -19,37 +28,49 @@ export type MonthAnalysis = {
   count: number;
   totalSpent: number;
   totalBudget: number;
-  dailyAllowance: number; // budget / days in month
+  dailyAllowance: number;
   daysInMonth: number;
   elapsedDays: number;
   daysLeft: number;
   dailyAvg: number;
   projectedTotal: number;
-  safeDaily: number;
+  pendingFixed: number; // still-unpaid obligations this month, reserved from the budget
+  safeDaily: number; // what can be spent per remaining day after reserving obligations
   todaySpent: number;
   daily: number[];
-  weekday: number[]; // Sun..Sat totals
+  weekday: number[];
   byCategory: CategoryStat[];
+  byMember: MemberStat[];
+  fixedStatus: FixedStatus[];
   insights: Insight[];
 };
 
 const sum = (xs: Expense[]) => xs.reduce((a, e) => a + e.amount, 0);
 
-export function analyzeMonth(month: string, categories: Category[], expenses: Expense[]): MonthAnalysis {
+export function analyzeMonth(
+  month: string,
+  categories: Category[],
+  expenses: Expense[],
+  fixed: FixedExpense[] = [],
+  members: Member[] = [],
+  opts: { budgetAware?: boolean } = {},
+): MonthAnalysis {
+  const budgetAware = opts.budgetAware ?? true;
   const [y, m] = month.split('-').map(Number);
   const dim = daysInMonth(y, m - 1);
   const now = new Date();
   const current = monthKey(now);
   const isCurrent = month === current;
+  const isFuture = month > current;
 
-  const elapsedDays = month < current ? dim : month > current ? 0 : now.getDate();
-  const daysLeft = isCurrent ? dim - now.getDate() + 1 : month > current ? dim : 0;
+  const elapsedDays = month < current ? dim : isFuture ? 0 : now.getDate();
+  const daysLeft = isCurrent ? dim - now.getDate() + 1 : isFuture ? dim : 0;
 
   const inMonth = expenses.filter((e) => e.date.startsWith(month));
   const prevMonth = shiftMonth(month, -1);
   const inPrev = expenses.filter((e) => e.date.startsWith(prevMonth));
   const totalSpent = sum(inMonth);
-  const totalBudget = categories.reduce((a, c) => a + (c.monthlyBudget || 0), 0);
+  const totalBudget = budgetAware ? categories.reduce((a, c) => a + (c.monthlyBudget || 0), 0) : 0;
 
   const daily = Array.from({ length: dim }, () => 0);
   const weekday = Array(7).fill(0);
@@ -61,32 +82,73 @@ export function analyzeMonth(month: string, categories: Category[], expenses: Ex
 
   const pace = (spent: number) => (elapsedDays > 0 && isCurrent ? (spent / elapsedDays) * dim : spent);
 
+  // Fixed obligations for this month
+  const fixedStatus: FixedStatus[] = fixed
+    .filter((f) => f.active)
+    .map((f) => {
+      const day = Math.min(f.dueDay, dim);
+      const paid = inMonth.some((e) => e.fixedId === f.id);
+      return {
+        fixed: f,
+        paid,
+        overdue: !paid && isCurrent && now.getDate() > day,
+        dueDate: `${month}-${String(day).padStart(2, '0')}`,
+      };
+    })
+    .sort((a, b) => Number(a.paid) - Number(b.paid) || a.fixed.dueDay - b.fixed.dueDay);
+  const pendingFixed = month >= current ? fixedStatus.filter((s) => !s.paid).reduce((a, s) => a + s.fixed.amount, 0) : 0;
+
   const byCategory: CategoryStat[] = categories
     .map((c) => {
       const spent = sum(inMonth.filter((e) => e.categoryId === c.id));
       const prevSpent = sum(inPrev.filter((e) => e.categoryId === c.id));
-      const budget = c.monthlyBudget || 0;
+      const budget = budgetAware ? c.monthlyBudget || 0 : 0;
       const pct = budget > 0 ? spent / budget : 0;
-      const projected = pace(spent);
+      // Unpaid obligations in this category are certain to land, so count them in the projection
+      const reserved = month >= current ? fixedStatus.filter((s) => !s.paid && s.fixed.categoryId === c.id).reduce((a, s) => a + s.fixed.amount, 0) : 0;
+      const projected = pace(spent) + reserved;
       const status: CategoryStat['status'] =
         budget > 0 && spent > budget ? 'over' : budget > 0 && (pct >= 0.8 || (isCurrent && projected > budget * 1.05)) ? 'warning' : 'ok';
       return { category: c, spent, prevSpent, budget, pct, projected, status };
     })
     .sort((a, b) => b.spent - a.spent);
 
+  const memberIds = Array.from(new Set([...members.map((x) => x.id), ...inMonth.map((e) => e.userId)]));
+  const byMember: MemberStat[] = memberIds
+    .map((id) => {
+      const mine = inMonth.filter((e) => e.userId === id);
+      return { member: members.find((x) => x.id === id) ?? null, userId: id, spent: sum(mine), count: mine.length };
+    })
+    .filter((s) => s.member || s.count > 0)
+    .sort((a, b) => b.spent - a.spent);
+
   const dailyAvg = elapsedDays > 0 ? totalSpent / elapsedDays : 0;
-  const projectedTotal = pace(totalSpent);
-  const safeDaily = daysLeft > 0 ? Math.max(0, (totalBudget - totalSpent) / daysLeft) : 0;
+  const projectedTotal = pace(totalSpent) + pendingFixed;
+  const safeDaily = daysLeft > 0 ? Math.max(0, (totalBudget - totalSpent - pendingFixed) / daysLeft) : 0;
   const todaySpent = isCurrent ? daily[now.getDate() - 1] : 0;
 
+  // ───── insights ─────
   const insights: Insight[] = [];
-  if (inMonth.length > 0) {
-    if (isCurrent && totalBudget > 0) {
+  const overdue = fixedStatus.filter((s) => s.overdue);
+  if (overdue.length) {
+    insights.push({
+      tone: 'bad',
+      text: overdue.length === 1
+        ? `${overdue[0].fixed.name} (${fmt(overdue[0].fixed.amount)}) فات موعد استحقاقه ولسه ما انسجّل كمدفوع.`
+        : `${overdue.length} مصاريف إجبارية فات موعدها ولسه ما انسجّلت كمدفوعة.`,
+    });
+  }
+  if (inMonth.length > 0 || pendingFixed > 0) {
+    if (isCurrent && budgetAware && totalBudget > 0) {
       if (projectedTotal > totalBudget) {
-        insights.push({ tone: 'bad', text: `إذا استمر الصرف بنفس الوتيرة، رح يوصل مجموع الشهر لـ ${fmt(projectedTotal)}، أي ${fmt(projectedTotal - totalBudget)} فوق البادجت.` });
+        insights.push({ tone: 'bad', text: `مع الإجبارية الباقية ووتيرة الصرف الحالية، رح يوصل مجموع الشهر لـ ${fmt(projectedTotal)}، أي ${fmt(projectedTotal - totalBudget)} فوق البادجت.` });
       } else {
-        insights.push({ tone: 'good', text: `ماشي ضمن البادجت. المتوقع لآخر الشهر ${fmt(projectedTotal)} من أصل ${fmt(totalBudget)}.` });
+        insights.push({ tone: 'good', text: `ماشيين ضمن البادجت. المتوقع لآخر الشهر ${fmt(projectedTotal)} من أصل ${fmt(totalBudget)}.` });
       }
+    }
+    if (isCurrent && pendingFixed > 0 && !overdue.length) {
+      const n = fixedStatus.filter((s) => !s.paid).length;
+      insights.push({ tone: 'info', text: `محجوز ${fmt(pendingFixed)} لـ ${n === 1 ? 'مصروف إجباري واحد' : `${n} مصاريف إجبارية`} لسه ما انتدفعت هذا الشهر.` });
     }
     byCategory
       .filter((s) => s.status === 'over')
@@ -101,40 +163,45 @@ export function analyzeMonth(month: string, categories: Category[], expenses: Ex
               s.pct >= 1
                 ? `${s.category.name} استهلك كامل البادجت، أي مصروف جديد فيه رح يكون تجاوز.`
                 : s.pct >= 0.8
-                ? `${s.category.name} استهلك ${Math.round(s.pct * 100)}% من البادجت، والباقي ${fmt(s.budget - s.spent)}.`
-                : `${s.category.name} بالوتيرة الحالية رح يوصل ${fmt(s.projected)} من أصل ${fmt(s.budget)}.`,
+                  ? `${s.category.name} استهلك ${Math.round(s.pct * 100)}% من البادجت، والباقي ${fmt(s.budget - s.spent)}.`
+                  : `${s.category.name} متوقع يوصل ${fmt(s.projected)} من أصل ${fmt(s.budget)}.`,
           }),
         );
     }
     const prevCut = String(Math.min(elapsedDays, 31)).padStart(2, '0');
     const prevSame = sum(inPrev.filter((e) => e.date.slice(8, 10) <= prevCut));
-    if (prevSame > 0 && elapsedDays > 0) {
+    if (prevSame > 0 && elapsedDays > 0 && totalSpent > 0) {
       const diff = (totalSpent - prevSame) / prevSame;
       insights.push({
         tone: diff > 0.1 ? 'warn' : diff < -0.1 ? 'good' : 'info',
-        text:
-          diff >= 0
-            ? `صرفك أعلى بـ ${Math.round(diff * 100)}% من نفس الفترة في ${monthName(prevMonth)}.`
-            : `صرفك أقل بـ ${Math.round(-diff * 100)}% من نفس الفترة في ${monthName(prevMonth)}.`,
+        text: Math.abs(diff) < 0.05
+          ? `الصرف بنفس مستوى نفس الفترة في ${monthName(prevMonth)}.`
+          : diff > 0
+            ? `الصرف أعلى بـ ${Math.round(diff * 100)}% من نفس الفترة في ${monthName(prevMonth)}.`
+            : `الصرف أقل بـ ${Math.round(-diff * 100)}% من نفس الفترة في ${monthName(prevMonth)}.`,
       });
     }
     const top = byCategory[0];
     if (top && totalSpent > 0)
       insights.push({ tone: 'info', text: `${top.category.name} أكبر بند هذا الشهر، ${Math.round((top.spent / totalSpent) * 100)}% من مجموع الصرف.` });
+    if (byMember.filter((s) => s.spent > 0).length > 1 && totalSpent > 0) {
+      const t = byMember[0];
+      insights.push({ tone: 'info', text: `${t.member?.displayName ?? 'عضو سابق'} صرف ${Math.round((t.spent / totalSpent) * 100)}% من مصاريف الشهر.` });
+    }
     if (inMonth.length >= 8) {
       const maxIdx = weekday.indexOf(Math.max(...weekday));
-      insights.push({ tone: 'info', text: `يوم ${AR_DAYS[maxIdx]} هو أكثر يوم بتصرف فيه.` });
+      insights.push({ tone: 'info', text: `يوم ${AR_DAYS[maxIdx]} هو أكثر يوم بتصرفوا فيه.` });
     }
   }
 
   return {
     month, isCurrent, count: inMonth.length, totalSpent, totalBudget,
     dailyAllowance: totalBudget / dim, daysInMonth: dim, elapsedDays, daysLeft,
-    dailyAvg, projectedTotal, safeDaily, todaySpent, daily, weekday, byCategory, insights,
+    dailyAvg, projectedTotal, pendingFixed, safeDaily, todaySpent, daily, weekday,
+    byCategory, byMember, fixedStatus, insights,
   };
 }
 
-/** Totals for the n months ending at `month` (oldest first) */
 export function monthHistory(month: string, n: number, expenses: Expense[]) {
   return Array.from({ length: n }, (_, i) => {
     const m = shiftMonth(month, i - n + 1);

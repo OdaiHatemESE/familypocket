@@ -22,10 +22,17 @@
     },
     "web": {
       "favicon": "./assets/favicon.png",
-      "name": "مصاريفي"
+      "name": "مصاريفي",
+      "bundler": "metro",
+      "output": "single"
     },
     "plugins": [
-      "expo-font"
-    ]
+      "expo-font",
+      "expo-router"
+    ],
+    "scheme": "familypocket",
+    "experiments": {
+      "baseUrl": "/familypocket"
+    }
   }
 }

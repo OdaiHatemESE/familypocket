@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Pressable, TextInput, View } from 'react-native';
-import { useStore } from '../store';
+import { useFamily } from '../family';
 import { C, F, TS } from '../theme';
 import { Category } from '../types';
 import { CatTile, Icon, IconName, PrimaryButton, T } from '../ui';
@@ -19,36 +19,52 @@ const inputStyle = {
   paddingVertical: 12,
 };
 
-export function CategorySheet({ visible, onClose, editing }: { visible: boolean; onClose: () => void; editing: Category | null }) {
-  const { categories, expenses, addCategory, updateCategory, deleteCategory } = useStore();
-  const [name, setName] = useState('');
-  const [budget, setBudget] = useState('');
-  const [icon, setIcon] = useState(ICONS[0]);
-  const [color, setColor] = useState(PALETTE[0]);
+type Props = { visible: boolean; onClose: () => void; editing: Category | null };
+
+export function CategorySheet(props: Props) {
+  if (!props.visible) return null;
+  return <CategoryForm key={props.editing?.id ?? 'new'} {...props} />;
+}
+
+function CategoryForm({ visible, onClose, editing }: Props) {
+  const { categories, expenses, fixed, saveCategory, deleteCategory } = useFamily();
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState(editing?.name ?? '');
+  const [budget, setBudget] = useState(editing?.monthlyBudget ? String(editing.monthlyBudget) : '');
+  const [icon, setIcon] = useState(editing?.icon ?? ICONS[5]);
+  const [color, setColor] = useState(editing?.color ?? PALETTE[categories.length % PALETTE.length]);
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  useEffect(() => {
-    if (!visible) return;
-    setError('');
-    setConfirmDelete(false);
-    setName(editing?.name ?? '');
-    setBudget(editing?.monthlyBudget ? String(editing.monthlyBudget) : '');
-    setIcon(editing?.icon ?? ICONS[5]);
-    setColor(editing?.color ?? PALETTE[categories.length % PALETTE.length]);
-  }, [visible, editing]);
-
-  const save = () => {
+  const save = async () => {
     if (!name.trim()) return setError('اكتب اسم التصنيف');
     const b = budget.trim() ? parseAmount(budget) : 0;
     if (isNaN(b) || b < 0) return setError('البادجت لازم يكون رقم');
-    const data = { name: name.trim(), monthlyBudget: b, icon, color };
-    if (editing) updateCategory({ ...editing, ...data });
-    else addCategory(data);
-    onClose();
+    setBusy(true);
+    try {
+      await saveCategory({ id: editing?.id, name: name.trim(), monthlyBudget: b, icon, color });
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!editing) return;
+    if (!confirmDelete) return setConfirmDelete(true);
+    setBusy(true);
+    try {
+      await deleteCategory(editing.id);
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
   };
 
   const linked = editing ? expenses.filter((e) => e.categoryId === editing.id).length : 0;
+  const linkedFixed = editing ? fixed.filter((f) => f.categoryId === editing.id).length : 0;
 
   return (
     <Sheet
@@ -58,16 +74,13 @@ export function CategorySheet({ visible, onClose, editing }: { visible: boolean;
       footer={
         <View>
           {!!error && <T size={TS.small} color={C.pom} align="center" style={{ marginBottom: 8 }}>{error}</T>}
-          <PrimaryButton label={editing ? 'حفظ التعديل' : 'أضف التصنيف'} onPress={save} />
+          <PrimaryButton label={editing ? 'حفظ التعديل' : 'أضف التصنيف'} onPress={save} busy={busy} />
           {editing && (
-            <Pressable
-              onPress={() => (confirmDelete ? (deleteCategory(editing.id), onClose()) : setConfirmDelete(true))}
-              style={{ paddingVertical: 12 }}
-            >
+            <Pressable onPress={remove} disabled={busy} style={{ paddingVertical: 12 }}>
               <T size={TS.small} w="medium" color={C.pom} align="center">
                 {confirmDelete
-                  ? linked
-                    ? `اضغط مرة ثانية: رح ينحذف التصنيف و${linked} مصروف معه`
+                  ? linked || linkedFixed
+                    ? `اضغط مرة ثانية: رح ينحذف التصنيف مع ${linked} مصروف${linkedFixed ? ` و${linkedFixed} إجباري` : ''} لكل العائلة`
                     : 'اضغط مرة ثانية لتأكيد الحذف'
                   : 'حذف التصنيف'}
               </T>
@@ -83,7 +96,7 @@ export function CategorySheet({ visible, onClose, editing }: { visible: boolean;
       <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 8, marginBottom: 8 }}>الاسم</T>
       <TextInput style={inputStyle} value={name} onChangeText={setName} placeholder="مثلاً: رسوم المدرسة" placeholderTextColor={C.faint} />
 
-      <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>البادجت الشهري بالدرهم</T>
+      <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>البادجت الشهري لهذا التصنيف (درهم)</T>
       <TextInput
         style={inputStyle}
         value={budget}

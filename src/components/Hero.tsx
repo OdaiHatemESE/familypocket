@@ -77,7 +77,7 @@ export function Hero({
   let value: number;
   let valueColor = '#fff';
   if (a.isCurrent && !overMonth) {
-    label = 'تقدر تصرف اليوم';
+    label = 'تقدروا تصرفوا اليوم';
     value = Math.max(a.safeDaily - a.todaySpent, 0);
     if (a.todaySpent > a.safeDaily) {
       label = 'تجاوزت حصة اليوم بـ';
@@ -119,7 +119,9 @@ export function Hero({
         <Money value={value} size={TS.hero} color={valueColor} w="bold" />
         {a.isCurrent && !overMonth && a.daysLeft > 0 && (
           <T size={TS.small} color={C.inkMuted}>
-            حتى تخلص الشهر ضمن البادجت، حصتك {num(a.safeDaily)} درهم باليوم لـ {a.daysLeft} يوم.
+            {a.pendingFixed > 0
+              ? `بعد حجز ${num(a.pendingFixed)} درهم للمصاريف الإجبارية، حصتكم ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`
+              : `حتى تخلصوا الشهر ضمن البادجت، حصتكم ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`}
           </T>
         )}
       </View>

@@ -1,13 +1,14 @@
-import React, { useMemo } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { router } from 'expo-router';
+import React, { useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { analyzeMonth, Insight } from '../analysis';
 import { ExpenseRow } from '../components/ExpenseRow';
 import { Hero } from '../components/Hero';
-import { useStore } from '../store';
+import { useFamily } from '../family';
+import { useTabs } from '../tabsContext';
 import { C, TS } from '../theme';
-import { Expense } from '../types';
-import { Bar, CatTile, Icon, IconName, Money, PrimaryButton, Row, SectionHead, T } from '../ui';
-import { shiftMonth } from '../utils';
+import { Avatar, Bar, Card, CatTile, Icon, IconName, Money, PrimaryButton, Row, SectionHead, T } from '../ui';
+import { num, shiftMonth, todayKey } from '../utils';
 
 export const toneStyle: Record<Insight['tone'], { color: string; icon: IconName }> = {
   bad: { color: C.pom, icon: 'arrow-up-bold-circle-outline' },
@@ -18,7 +19,7 @@ export const toneStyle: Record<Insight['tone'], { color: string; icon: IconName 
 
 export function InsightList({ items }: { items: Insight[] }) {
   return (
-    <View style={{ backgroundColor: C.surface, borderRadius: 20, paddingVertical: 6 }}>
+    <Card style={{ paddingVertical: 6 }}>
       {items.map((ins, i) => (
         <View key={i} style={{ flexDirection: 'row-reverse', paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: i ? 1 : 0, borderColor: C.line }}>
           <View style={{ marginTop: 2, marginLeft: 12 }}>
@@ -27,61 +28,150 @@ export function InsightList({ items }: { items: Insight[] }) {
           <T style={{ flex: 1 }}>{ins.text}</T>
         </View>
       ))}
-    </View>
+    </Card>
   );
 }
 
-export function Home({
-  month,
-  setMonth,
-  onEdit,
-  onAdd,
-  goTo,
-}: {
-  month: string;
-  setMonth: (m: string) => void;
-  onEdit: (e: Expense) => void;
-  onAdd: () => void;
-  goTo: (tab: 'list' | 'cats' | 'stats') => void;
-}) {
-  const { categories, expenses, loadDemo } = useStore();
-  const a = useMemo(() => analyzeMonth(month, categories, expenses), [month, categories, expenses]);
+export function Home() {
+  const { categories, expenses, fixed, members, memberOf, markFixedPaid, refresh } = useFamily();
+  const { month, setMonth, openAdd, openExpense } = useTabs();
+  const [paying, setPaying] = useState<string | null>(null);
+  const [payError, setPayError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const a = useMemo(() => analyzeMonth(month, categories, expenses, fixed, members), [month, categories, expenses, fixed, members]);
   const recent = useMemo(
     () => expenses.filter((e) => e.date.startsWith(month)).sort((x, y) => (x.date === y.date ? y.createdAt - x.createdAt : x.date < y.date ? 1 : -1)).slice(0, 5),
     [expenses, month],
   );
   const catOf = (id: string) => categories.find((c) => c.id === id);
+  const family = members.length > 1;
+  const paidCount = a.fixedStatus.filter((s) => s.paid).length;
+
+  const pay = async (fixedId: string) => {
+    const f = fixed.find((x) => x.id === fixedId);
+    if (!f) return;
+    setPaying(fixedId);
+    setPayError('');
+    try {
+      // Paid today if this is the current month, otherwise on its due date in the viewed month
+      const s = a.fixedStatus.find((x) => x.fixed.id === fixedId)!;
+      await markFixedPaid(f, a.isCurrent ? todayKey() : s.dueDate);
+    } catch (e) {
+      setPayError((e as Error).message);
+    }
+    setPaying(null);
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await refresh().catch(() => {});
+    setRefreshing(false);
+  };
 
   return (
-    <ScrollView contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      contentContainerStyle={{ paddingBottom: 140 }}
+      showsVerticalScrollIndicator={false}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.inkMuted} />}
+    >
       <Hero a={a} onPrev={() => setMonth(shiftMonth(month, -1))} onNext={() => setMonth(shiftMonth(month, 1))} />
 
       <View style={{ paddingHorizontal: 16 }}>
-        {expenses.length === 0 ? (
-          <View style={{ backgroundColor: C.surface, borderRadius: 24, padding: 24, marginTop: 20, alignItems: 'center' }}>
+        {expenses.length === 0 && fixed.length === 0 ? (
+          <Card style={{ padding: 24, marginTop: 20, alignItems: 'center' }}>
             <CatTile icon="wallet-outline" color={C.oasis} size={56} />
-            <T w="bold" size={TS.h2} align="center" style={{ marginTop: 14 }}>سجّل أول مصروف</T>
+            <T w="bold" size={TS.h2} align="center" style={{ marginTop: 14 }}>أهلاً فيكم</T>
             <T color={C.sub} align="center" style={{ marginTop: 6, marginBottom: 18 }}>
-              كل مصروف بتسجله بيدخل بالتحليل اليومي ومقارنة البادجت.
+              ابدأوا بتحديد البادجت والمصاريف الإجبارية، أو سجّلوا أول مصروف مباشرة.
             </T>
             <View style={{ alignSelf: 'stretch', gap: 10 }}>
-              <PrimaryButton label="سجّل مصروف" onPress={onAdd} />
-              <Pressable onPress={loadDemo} style={{ paddingVertical: 10 }}>
-                <T w="medium" color={C.oasis} align="center">جرّب ببيانات تجريبية</T>
+              <PrimaryButton label="سجّل مصروف" onPress={openAdd} />
+              <Pressable onPress={() => router.push('/settings/budgets')} style={{ paddingVertical: 10 }}>
+                <T w="medium" color={C.oasis} align="center">حدّد البادجت</T>
               </Pressable>
             </View>
-          </View>
+          </Card>
         ) : (
           <>
             {a.insights.length > 0 && (
               <>
-                <SectionHead title="تحليل اليوم" action="التحليل الكامل" onAction={() => goTo('stats')} />
+                <SectionHead title="تحليل اليوم" action="التحليل الكامل" onAction={() => router.push('/analysis')} />
                 <InsightList items={a.insights.slice(0, 3)} />
               </>
             )}
 
-            <SectionHead title="البادجت حسب التصنيف" action="تعديل" onAction={() => goTo('cats')} />
-            <View style={{ backgroundColor: C.surface, borderRadius: 20, paddingVertical: 4 }}>
+            {a.fixedStatus.length > 0 && (
+              <>
+                <SectionHead title="المصاريف الإجبارية" action="إدارة" onAction={() => router.push('/settings/fixed')} />
+                <Card>
+                  <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 }}>
+                    <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                      <T size={TS.small} color={C.sub}>انتدفع {paidCount} من {a.fixedStatus.length}</T>
+                      {a.pendingFixed > 0 ? (
+                        <T size={TS.small} color={C.sub}>باقي {num(a.pendingFixed)} درهم</T>
+                      ) : (
+                        <T size={TS.small} w="semibold" color={C.oasis}>كلها مدفوعة</T>
+                      )}
+                    </Row>
+                    <Bar pct={a.fixedStatus.length ? paidCount / a.fixedStatus.length : 0} color={C.oasis} />
+                  </View>
+                  {a.fixedStatus.map((s, i) => {
+                    const cat = catOf(s.fixed.categoryId);
+                    const busy = paying === s.fixed.id;
+                    return (
+                      <Row key={s.fixed.id} style={{ paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: i ? 1 : 0, borderColor: C.line }}>
+                        <CatTile icon={cat?.icon ?? 'calendar'} color={cat?.color ?? C.faint} size={38} />
+                        <View style={{ flex: 1, marginRight: 12 }}>
+                          <T w="medium" color={s.paid ? C.sub : C.text}>{s.fixed.name}</T>
+                          <T size={TS.small} color={s.overdue ? C.pom : C.sub}>
+                            {num(s.fixed.amount)} درهم، {s.paid ? 'مدفوع' : s.overdue ? `فات موعده يوم ${Number(s.dueDate.slice(8))}` : `يستحق يوم ${Number(s.dueDate.slice(8))}`}
+                          </T>
+                        </View>
+                        {s.paid ? (
+                          <Icon name="check-circle" size={26} color={C.oasis} />
+                        ) : (
+                          <Pressable
+                            onPress={() => pay(s.fixed.id)}
+                            disabled={!!paying}
+                            accessibilityLabel={`سجّل ${s.fixed.name} كمدفوع`}
+                            style={({ pressed }) => ({
+                              paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
+                              backgroundColor: s.overdue ? C.pom : C.ink, opacity: pressed ? 0.8 : 1, minWidth: 64, alignItems: 'center',
+                            })}
+                          >
+                            {busy ? <ActivityIndicator color="#fff" size="small" /> : <T w="semibold" size={TS.small} color="#fff" align="center">دفعت</T>}
+                          </Pressable>
+                        )}
+                      </Row>
+                    );
+                  })}
+                </Card>
+                {!!payError && <T size={TS.small} color={C.pom} style={{ marginTop: 8 }}>{payError}</T>}
+              </>
+            )}
+
+            {family && a.totalSpent > 0 && (
+              <>
+                <SectionHead title="مين صرف" />
+                <Card style={{ padding: 16, gap: 14 }}>
+                  {a.byMember.map((s) => (
+                    <Row key={s.userId ?? 'former'} style={{ gap: 12 }}>
+                      <Avatar name={s.member?.displayName ?? '؟'} color={s.member?.color ?? C.faint} size={34} />
+                      <View style={{ flex: 1 }}>
+                        <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                          <T w="medium">{s.member?.displayName ?? 'عضو سابق'}</T>
+                          <Money value={s.spent} />
+                        </Row>
+                        <Bar pct={a.totalSpent ? s.spent / a.totalSpent : 0} color={s.member?.color ?? C.faint} />
+                      </View>
+                    </Row>
+                  ))}
+                </Card>
+              </>
+            )}
+
+            <SectionHead title="البادجت حسب التصنيف" action="تعديل" onAction={() => router.push('/settings/budgets')} />
+            <Card style={{ paddingVertical: 4 }}>
               {a.byCategory.map((s, i) => {
                 const barColor = s.status === 'over' ? C.pom : s.status === 'warning' ? C.saffron : s.category.color;
                 return (
@@ -93,14 +183,12 @@ export function Home({
                           <T w="medium">{s.category.name}</T>
                           <Money value={s.spent} size={TS.body} color={s.status === 'over' ? C.pom : C.text} />
                         </Row>
-                        <View style={{ marginTop: 8 }}>
-                          {s.budget > 0 ? <Bar pct={s.pct} color={barColor} /> : null}
-                        </View>
+                        {s.budget > 0 && <View style={{ marginTop: 8 }}><Bar pct={s.pct} color={barColor} /></View>}
                         <T size={TS.tiny} color={C.sub} style={{ marginTop: 6 }}>
                           {s.budget > 0
                             ? s.spent > s.budget
-                              ? `فوق البادجت بـ ${Math.round(s.spent - s.budget).toLocaleString('en-US')} من أصل ${s.budget.toLocaleString('en-US')}`
-                              : `باقي ${Math.round(s.budget - s.spent).toLocaleString('en-US')} من أصل ${s.budget.toLocaleString('en-US')}`
+                              ? `فوق البادجت بـ ${num(s.spent - s.budget)} من أصل ${num(s.budget)}`
+                              : `باقي ${num(s.budget - s.spent)} من أصل ${num(s.budget)}`
                             : 'بدون بادجت'}
                         </T>
                       </View>
@@ -108,16 +196,18 @@ export function Home({
                   </View>
                 );
               })}
-            </View>
+            </Card>
 
-            <SectionHead title="آخر المصاريف" action="عرض الكل" onAction={() => goTo('list')} />
-            <View style={{ backgroundColor: C.surface, borderRadius: 20, overflow: 'hidden' }}>
+            <SectionHead title="آخر المصاريف" action="عرض الكل" onAction={() => router.push('/expenses')} />
+            <Card>
               {recent.length === 0 ? (
                 <T color={C.sub} align="center" style={{ padding: 20 }}>ما في مصاريف بهذا الشهر.</T>
               ) : (
-                recent.map((e, i) => <ExpenseRow key={e.id} e={e} cat={catOf(e.categoryId)} onPress={() => onEdit(e)} last={i === recent.length - 1} />)
+                recent.map((e, i) => (
+                  <ExpenseRow key={e.id} e={e} cat={catOf(e.categoryId)} member={memberOf(e.userId)} showMember={family} onPress={() => openExpense(e)} last={i === recent.length - 1} />
+                ))
               )}
-            </View>
+            </Card>
           </>
         )}
       </View>
