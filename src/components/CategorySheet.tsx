@@ -4,7 +4,7 @@ import { useFamily } from '../family';
 import { C, F, TS } from '../theme';
 import { Category } from '../types';
 import { CatTile, Icon, IconName, PrimaryButton, T } from '../ui';
-import { ICONS, PALETTE, parseAmount } from '../utils';
+import { ICONS, PALETTE } from '../utils';
 import { Sheet } from './Sheet';
 
 const inputStyle = {
@@ -30,7 +30,6 @@ function CategoryForm({ visible, onClose, editing }: Props) {
   const { categories, expenses, fixed, saveCategory, deleteCategory } = useFamily();
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState(editing?.name ?? '');
-  const [budget, setBudget] = useState(editing?.monthlyBudget ? String(editing.monthlyBudget) : '');
   const [icon, setIcon] = useState(editing?.icon ?? ICONS[5]);
   const [color, setColor] = useState(editing?.color ?? PALETTE[categories.length % PALETTE.length]);
   const [error, setError] = useState('');
@@ -38,11 +37,9 @@ function CategoryForm({ visible, onClose, editing }: Props) {
 
   const save = async () => {
     if (!name.trim()) return setError('اكتب اسم التصنيف');
-    const b = budget.trim() ? parseAmount(budget) : 0;
-    if (isNaN(b) || b < 0) return setError('البادجت لازم يكون رقم');
     setBusy(true);
     try {
-      await saveCategory({ id: editing?.id, name: name.trim(), monthlyBudget: b, icon, color });
+      await saveCategory({ id: editing?.id, name: name.trim(), monthlyBudget: editing?.monthlyBudget ?? 0, icon, color });
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -95,16 +92,6 @@ function CategoryForm({ visible, onClose, editing }: Props) {
 
       <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 8, marginBottom: 8 }}>الاسم</T>
       <TextInput style={inputStyle} value={name} onChangeText={setName} placeholder="مثلاً: رسوم المدرسة" placeholderTextColor={C.faint} />
-
-      <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>البادجت الشهري لهذا التصنيف (درهم)</T>
-      <TextInput
-        style={inputStyle}
-        value={budget}
-        onChangeText={setBudget}
-        keyboardType="decimal-pad"
-        placeholder="اتركه فاضي إذا ما بدك حد"
-        placeholderTextColor={C.faint}
-      />
 
       <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>الأيقونة</T>
       <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8 }}>

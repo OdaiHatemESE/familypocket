@@ -1,11 +1,13 @@
-import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import React, { useMemo } from 'react';
+import { ScrollView, View } from 'react-native';
 import { analyzeMonth, monthHistory } from '../analysis';
 import { Columns, Donut } from '../components/Charts';
 import { useFamily } from '../family';
 import { useTabs } from '../tabsContext';
 import { C, TS } from '../theme';
-import { Avatar, Chip, HScroll, Icon, Money, Row, SectionHead, T } from '../ui';
+import { Icon, Money, Row, SectionHead, T } from '../ui';
+import { ScopeSwitch } from '../components/ScopeSwitch';
+import { expenseOwner } from '../budgets';
 import { AR_DAYS_SHORT, monthName, num } from '../utils';
 import { InsightList } from './Home';
 import { PageHeader } from '../components/PageHeader';
@@ -13,39 +15,21 @@ import { PageHeader } from '../components/PageHeader';
 const card = { backgroundColor: C.surface, borderRadius: 20, padding: 16 };
 
 export function Analysis() {
-  const { categories, expenses, fixed, members } = useFamily();
-  const { month, setMonth } = useTabs();
-  const [who, setWho] = useState<string | null>(null);
-  const family = members.length > 1;
-  const scoped = useMemo(() => (who ? expenses.filter((e) => e.userId === who) : expenses), [expenses, who]);
+  const { categories, expenses, fixed, members, budgetsFor } = useFamily();
+  const { month, setMonth, scope } = useTabs();
+  const budgets = useMemo(() => budgetsFor(month), [budgetsFor, month]);
   const a = useMemo(
-    () => analyzeMonth(month, categories, scoped, who ? [] : fixed, members, { budgetAware: !who }),
-    [month, categories, scoped, fixed, members, who],
+    () => analyzeMonth(month, categories, expenses, fixed, members, budgets, scope),
+    [month, categories, expenses, fixed, members, budgets, scope],
   );
+  const scoped = useMemo(() => (scope ? expenses.filter((e) => expenseOwner(e, fixed) === scope) : expenses), [expenses, fixed, scope]);
   const hist = useMemo(() => monthHistory(month, 6, scoped), [month, scoped]);
   const withSpend = a.byCategory.filter((s) => s.spent > 0);
 
   return (
     <View style={{ flex: 1 }}>
       <PageHeader title="التحليل" month={month} setMonth={setMonth}>
-        {family && (
-          <HScroll style={{ paddingTop: 10, paddingBottom: 4 }}>
-            <Chip label="كل العائلة" icon="account-group-outline" on={!who} onPress={() => setWho(null)} />
-            {members.map((m) => (
-              <Pressable
-                key={m.id}
-                onPress={() => setWho(who === m.id ? null : m.id)}
-                style={{
-                  flexDirection: 'row-reverse', alignItems: 'center', gap: 6, paddingRight: 4, paddingLeft: 12, paddingVertical: 4,
-                  borderRadius: 999, backgroundColor: who === m.id ? C.ink : C.surface, borderWidth: 1, borderColor: who === m.id ? C.ink : C.line,
-                }}
-              >
-                <Avatar name={m.displayName} color={m.color} size={24} />
-                <T size={TS.small} w={who === m.id ? 'semibold' : 'regular'} color={who === m.id ? '#fff' : C.text}>{m.displayName}</T>
-              </Pressable>
-            ))}
-          </HScroll>
-        )}
+        <ScopeSwitch style={{ paddingTop: 10, paddingBottom: 4 }} />
       </PageHeader>
       <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
         {/* Key numbers */}
@@ -53,7 +37,8 @@ export function Analysis() {
           <Metric label="متوسط الصرف اليومي" value={a.dailyAvg} />
           <Metric label={a.isCurrent ? 'المتوقع لآخر الشهر' : 'مجموع الشهر'} value={a.projectedTotal}
             color={a.totalBudget > 0 && a.projectedTotal > a.totalBudget ? C.pom : C.text} />
-          {!who ? <Metric label="المحجوز للإجبارية" value={a.pendingFixed} /> : <Metric label="مصاريف إجبارية دفعها" raw={String(scoped.filter((e) => e.fixedId && e.date.startsWith(month)).length)} />}
+          <Metric label="البادجت الكلي" value={a.totalBudget} />
+          <Metric label="المحجوز للإجبارية" value={a.pendingFixed} />
           <Metric label="عدد المصاريف" raw={String(a.count)} />
         </View>
 
@@ -109,10 +94,10 @@ export function Analysis() {
               label: monthName(h.month),
               value: h.total,
               caption: h.total ? `${(h.total / 1000).toFixed(1)} ألف` : '',
-              color: h.month === month ? C.ink : !who && a.totalBudget > 0 && h.total > a.totalBudget ? C.pomLight : '#B8C4D9',
+              color: h.month === month ? C.ink : a.hasBudget && h.total > a.totalBudget ? C.pomLight : '#B8C4D9',
             }))}
-            reference={who ? undefined : a.totalBudget}
-            referenceLabel={who ? undefined : `البادجت الشهري ${num(a.totalBudget)} درهم`}
+            reference={a.hasBudget ? a.totalBudget : undefined}
+            referenceLabel={a.hasBudget ? `بادجت ${monthName(month)} ${num(a.totalBudget)} درهم` : undefined}
           />
         </View>
 

@@ -3,7 +3,7 @@ import { Pressable, Switch, View } from 'react-native';
 import { useFamily } from '../family';
 import { C, TS } from '../theme';
 import { FixedExpense } from '../types';
-import { CatTile, ErrorText, Field, PrimaryButton, Row, T } from '../ui';
+import { Avatar, CatTile, ErrorText, Field, PrimaryButton, Row, T } from '../ui';
 import { parseAmount } from '../utils';
 import { Sheet } from './Sheet';
 
@@ -17,12 +17,13 @@ export function FixedSheet(props: Props) {
 }
 
 function FixedForm({ visible, onClose, editing }: Props) {
-  const { categories, saveFixed, deleteFixed } = useFamily();
+  const { categories, members, me, saveFixed, deleteFixed } = useFamily();
   const [name, setName] = useState(editing?.name ?? '');
   const [amount, setAmount] = useState(editing ? String(editing.amount) : '');
   const [catId, setCatId] = useState(editing?.categoryId ?? '');
   const [day, setDay] = useState(editing?.dueDay ?? 1);
   const [active, setActive] = useState(editing?.active ?? true);
+  const [ownerId, setOwnerId] = useState<string | null>(editing?.ownerId ?? me?.id ?? null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -34,7 +35,7 @@ function FixedForm({ visible, onClose, editing }: Props) {
     if (!catId) return setError('اختر التصنيف اللي بينحسب عليه');
     setBusy(true);
     try {
-      await saveFixed({ id: editing?.id, name: name.trim(), amount: n, categoryId: catId, dueDay: day, active });
+      await saveFixed({ id: editing?.id, name: name.trim(), amount: n, categoryId: catId, dueDay: day, active, ownerId });
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -77,6 +78,30 @@ function FixedForm({ visible, onClose, editing }: Props) {
     >
       <Field label="الاسم" value={name} onChangeText={setName} placeholder="مثلاً: الإيجار، قسط المدرسة، ديوا" />
       <Field label="المبلغ الشهري (درهم)" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder="0" />
+
+      {members.length > 1 && (
+        <>
+          <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>المسؤول عنه (بينخصم من بادجته)</T>
+          <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8 }}>
+            {members.map((m) => {
+              const on = m.id === ownerId;
+              return (
+                <Pressable
+                  key={m.id}
+                  onPress={() => setOwnerId(m.id)}
+                  style={{
+                    flexDirection: 'row-reverse', alignItems: 'center', gap: 8, paddingVertical: 5, paddingLeft: 14, paddingRight: 5,
+                    borderRadius: 999, borderWidth: 1.5, borderColor: on ? m.color : C.line, backgroundColor: on ? m.color + '12' : C.surface,
+                  }}
+                >
+                  <Avatar name={m.displayName} color={m.color} size={26} />
+                  <T size={TS.small} w={on ? 'semibold' : 'regular'}>{m.displayName}</T>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      )}
 
       <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>بينحسب على تصنيف</T>
       <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8 }}>

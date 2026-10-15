@@ -5,12 +5,15 @@ import { PageHeader } from '../../components/PageHeader';
 import { useFamily } from '../../family';
 import { C, TS } from '../../theme';
 import { Avatar, Card, ListRow, Row, SectionHead, T } from '../../ui';
-import { num } from '../../utils';
+import { monthKey, monthName, num } from '../../utils';
 
 export default function Settings() {
-  const { me, household, members, categories, fixed, signOut } = useFamily();
+  const { me, household, members, categories, fixed, signOut, budgetsFor } = useFamily();
   const [confirmOut, setConfirmOut] = useState(false);
-  const totalBudget = categories.reduce((a, c) => a + c.monthlyBudget, 0);
+  const month = monthKey(new Date());
+  const budgets = budgetsFor(month);
+  const totalBudget = members.reduce((a, m) => a + (budgets[m.id]?.total ?? 0), 0);
+  const unset = members.filter((m) => !budgets[m.id]?.total).length;
   const activeFixed = fixed.filter((f) => f.active);
   const fixedTotal = activeFixed.reduce((a, f) => a + f.amount, 0);
 
@@ -42,9 +45,20 @@ export default function Settings() {
           <ListRow
             icon="chart-donut"
             iconColor="#0F7B6C"
-            title="البادجت والتصنيفات"
-            detail={`${categories.length} تصنيف، بادجت شهري ${num(totalBudget)} درهم`}
+            title="البادجت الشهري"
+            detail={
+              totalBudget
+                ? `${monthName(month)}: ${num(totalBudget)} درهم${unset ? `، ${unset} بدون بادجت` : ''}`
+                : 'حدّد بادجت كل فرد ووزّعه على التصنيفات'
+            }
             onPress={() => router.push('/settings/budgets')}
+          />
+          <ListRow
+            icon="shape-outline"
+            iconColor="#3B8EA5"
+            title="التصنيفات"
+            detail={`${categories.length} تصنيف`}
+            onPress={() => router.push('/settings/categories')}
           />
           <ListRow
             icon="calendar-sync-outline"

@@ -4,6 +4,9 @@ import { Expense } from './types';
 type TabsCtx = {
   month: string;
   setMonth: (m: string) => void;
+  /** null = whole family, otherwise a member id */
+  scope: string | null;
+  setScope: (s: string | null) => void;
   openAdd: () => void;
   openExpense: (e: Expense) => void;
 };

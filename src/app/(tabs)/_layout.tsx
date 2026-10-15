@@ -71,6 +71,7 @@ function TabBar({ state, navigation, onAdd }: BarProps & { onAdd: () => void }) 
 
 export default function TabsLayout() {
   const [month, setMonth] = useState(monthKey(new Date()));
+  const [scope, setScope] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
 
@@ -78,10 +79,12 @@ export default function TabsLayout() {
     () => ({
       month,
       setMonth,
+      scope,
+      setScope,
       openAdd: () => (setEditing(null), setSheetOpen(true)),
       openExpense: (e: Expense) => (setEditing(e), setSheetOpen(true)),
     }),
-    [month],
+    [month, scope],
   );
 
   return (

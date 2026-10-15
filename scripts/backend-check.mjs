@@ -84,6 +84,26 @@ ok(!!inject.error, "another family cannot write into this family's data");
 const otherAdd = await other.rpc('set_member_password', { p_user: (await b.auth.getUser()).data.user.id, p_password: 'hacked123' });
 ok(!!otherAdd.error, "another family's owner cannot reset this member's password", otherAdd.error?.message);
 
+// 5b. Monthly member budgets
+const month = today.slice(0, 7);
+const bId = (await b.auth.getUser()).data.user.id;
+let q = await a.from('member_budgets').upsert({ user_id: bId, month, total: 4000 });
+ok(!q.error, "owner sets member's monthly budget", q.error?.message);
+q = await a.from('member_category_budgets').upsert(cats.data.map((c, i) => ({ user_id: bId, month, category_id: c.id, amount: i === 0 ? 1500 : 0 })));
+ok(!q.error, "owner splits member's budget across categories", q.error?.message);
+q = await b.from('member_budgets').select('total').eq('user_id', bId).eq('month', month).single();
+ok(Number(q.data?.total) === 4000, 'member sees their budget', JSON.stringify(q.data));
+q = await b.from('member_budgets').upsert({ user_id: bId, month, total: 4500 }).select();
+ok(q.data?.length === 1, 'member updates their own budget');
+q = await other.from('member_budgets').select('total').eq('user_id', bId);
+ok((q.data?.length ?? 0) === 0, "another family cannot read this family's budgets");
+q = await other.from('member_budgets').insert({ user_id: bId, month: '2030-01', total: 1 });
+ok(!!q.error, "another family cannot set this family's budgets");
+q = await other.from('member_category_budgets').insert({ user_id: (await other.auth.getUser()).data.user.id, month, category_id: catId, amount: 1 });
+ok(!!q.error, "another family cannot use this family's categories in a budget");
+const fxOwner = await a.from('fixed_expenses').insert({ name: 'QA school bus', amount: 300, due_day: 5, category_id: catId, owner_id: bId }).select().single();
+ok(!fxOwner.error && fxOwner.data.owner_id === bId, 'fixed expense assigned to a responsible member', fxOwner.error?.message);
+
 // 6. Owner-only actions
 const bTry = await b.rpc('set_member_password', { p_user: (await a.auth.getUser()).data.user.id, p_password: 'hacked123' });
 ok(bTry.error?.message === 'OWNER_ONLY', 'member cannot reset passwords', bTry.error?.message);

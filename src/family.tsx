@@ -2,7 +2,8 @@ import type { Session } from '@supabase/supabase-js';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { loginEmail } from './lib/config';
 import { friendlyError, supabase } from './lib/supabase';
-import { Category, Expense, FixedExpense, Household, Member } from './types';
+import { resolveAll } from './budgets';
+import { BudgetRow, Category, CategoryBudgetRow, Expense, FixedExpense, Household, Member, MemberBudget } from './types';
 import { monthKey, shiftMonth } from './utils';
 
 type Status = 'loading' | 'signedOut' | 'ready';
@@ -19,6 +20,11 @@ type Ctx = {
   categories: Category[];
   expenses: Expense[];
   fixed: FixedExpense[];
+  budgetRows: BudgetRow[];
+  categoryBudgetRows: CategoryBudgetRow[];
+  /** Each active member's budget as it applies to `month` */
+  budgetsFor: (month: string) => Record<string, MemberBudget>;
+  saveBudget: (userId: string, month: string, total: number, cats: Record<string, number>) => Promise<void>;
   memberOf: (id: string | null) => Member | undefined;
   refresh: () => Promise<void>;
   // auth
@@ -55,8 +61,10 @@ const toExpense = (r: any): Expense => ({
   note: r.note ?? '', date: r.spent_on, createdAt: Date.parse(r.created_at) || 0,
 });
 const toFixed = (r: any): FixedExpense => ({
-  id: r.id, name: r.name, categoryId: r.category_id, amount: Number(r.amount) || 0, dueDay: r.due_day, active: r.active,
+  id: r.id, name: r.name, categoryId: r.category_id, amount: Number(r.amount) || 0, dueDay: r.due_day, active: r.active, ownerId: r.owner_id ?? null,
 });
+const toBudget = (r: any): BudgetRow => ({ userId: r.user_id, month: r.month, total: Number(r.total) || 0 });
+const toCatBudget = (r: any): CategoryBudgetRow => ({ userId: r.user_id, month: r.month, categoryId: r.category_id, amount: Number(r.amount) || 0 });
 
 /** Throws a user-facing Error when Supabase returns an error */
 function check<T extends { error: unknown }>(res: T): T {
@@ -76,6 +84,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [fixed, setFixed] = useState<FixedExpense[]>([]);
+  const [budgetRows, setBudgetRows] = useState<BudgetRow[]>([]);
+  const [categoryBudgetRows, setCategoryBudgetRows] = useState<CategoryBudgetRow[]>([]);
   const householdId = useRef<string | null>(null);
 
   const loaders = useMemo(
@@ -99,6 +109,15 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         );
         setExpenses((data ?? []).map(toExpense));
       },
+      budgets: async () => {
+        const [a, b] = await Promise.all([
+          supabase.from('member_budgets').select('*'),
+          supabase.from('member_category_budgets').select('*'),
+        ]);
+        check(a); check(b);
+        setBudgetRows((a.data ?? []).map(toBudget));
+        setCategoryBudgetRows((b.data ?? []).map(toCatBudget));
+      },
       household: async () => {
         const { data } = check(await supabase.from('households').select('*').limit(1).maybeSingle());
         if (data) setHousehold({ id: data.id, name: data.name, currency: data.currency });
@@ -109,7 +128,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
 
   const clear = useCallback(() => {
     householdId.current = null;
-    setUserId(null); setMe(null); setHousehold(null); setProfiles([]); setCategories([]); setExpenses([]); setFixed([]);
+    setUserId(null); setMe(null); setHousehold(null); setProfiles([]); setCategories([]); setExpenses([]); setFixed([]); setBudgetRows([]); setCategoryBudgetRows([]);
     setStatus('signedOut');
   }, []);
 
@@ -124,7 +143,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     setMe(toMember(profile));
     householdId.current = profile.household_id;
     try {
-      await Promise.all([loaders.household(), loaders.members(), loaders.categories(), loaders.fixed(), loaders.expenses()]);
+      await Promise.all([loaders.household(), loaders.members(), loaders.categories(), loaders.fixed(), loaders.expenses(), loaders.budgets()]);
     } finally {
       setStatus('ready');
     }
@@ -161,6 +180,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     watch('categories', 'categories');
     watch('fixed_expenses', 'fixed');
     watch('profiles', 'members');
+    watch('member_budgets', 'budgets');
+    watch('member_category_budgets', 'budgets');
     channel.subscribe();
     return () => {
       Object.values(timers).forEach(clearTimeout);
@@ -177,6 +198,15 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
 
     return {
       status, me, household, members, categories, expenses, fixed, memberOf,
+      budgetRows, categoryBudgetRows,
+      budgetsFor: (month) => resolveAll(members, month, budgetRows, categoryBudgetRows),
+      saveBudget: async (userId, month, total, cats) => {
+        check(await supabase.from('member_budgets').upsert({ user_id: userId, month, total, updated_at: new Date().toISOString() }));
+        // Save every category (zeros included) so this month is a complete snapshot that later months inherit
+        const rows = categories.map((c) => ({ user_id: userId, month, category_id: c.id, amount: cats[c.id] ?? 0 }));
+        if (rows.length) check(await supabase.from('member_category_budgets').upsert(rows));
+        await loaders.budgets();
+      },
       refresh: async () => {
         if (userId) await loadAll(userId);
       },
@@ -251,7 +281,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       },
 
       saveFixed: async (f) => {
-        const row = { name: f.name, category_id: f.categoryId, amount: f.amount, due_day: f.dueDay, active: f.active };
+        const row = { name: f.name, category_id: f.categoryId, amount: f.amount, due_day: f.dueDay, active: f.active, owner_id: f.ownerId };
         if (f.id) check(await supabase.from('fixed_expenses').update(row).eq('id', f.id));
         else check(await supabase.from('fixed_expenses').insert(row));
         await loaders.fixed();
@@ -267,7 +297,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         setExpenses((xs) => [toExpense(data), ...xs]);
       },
     };
-  }, [status, me, household, members, profiles, categories, expenses, fixed, userId, loaders, loadAll]);
+  }, [status, me, household, members, profiles, categories, expenses, fixed, budgetRows, categoryBudgetRows, userId, loaders, loadAll]);
 
   return <FamilyContext.Provider value={value}>{children}</FamilyContext.Provider>;
 }

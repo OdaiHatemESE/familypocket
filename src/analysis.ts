@@ -1,4 +1,5 @@
-import { Category, Expense, FixedExpense, Member } from './types';
+import { expenseOwner } from './budgets';
+import { Category, Expense, FixedExpense, Member, MemberBudget } from './types';
 import { AR_DAYS, daysInMonth, fmt, monthKey, monthName, shiftMonth } from './utils';
 
 export type CategoryStat = {
@@ -18,7 +19,7 @@ export type FixedStatus = {
   dueDate: string; // YYYY-MM-DD in this month (clamped to month length)
 };
 
-export type MemberStat = { member: Member | null; userId: string | null; spent: number; count: number };
+export type MemberStat = { member: Member | null; userId: string | null; spent: number; count: number; budget: number };
 
 export type Insight = { tone: 'good' | 'warn' | 'bad' | 'info'; text: string };
 
@@ -28,6 +29,10 @@ export type MonthAnalysis = {
   count: number;
   totalSpent: number;
   totalBudget: number;
+  allocated: number; // sum of category budgets
+  unallocated: number; // total budget not assigned to any category
+  hasBudget: boolean;
+  scope: string | null; // member id, or null for the whole family
   dailyAllowance: number;
   daysInMonth: number;
   elapsedDays: number;
@@ -50,12 +55,12 @@ const sum = (xs: Expense[]) => xs.reduce((a, e) => a + e.amount, 0);
 export function analyzeMonth(
   month: string,
   categories: Category[],
-  expenses: Expense[],
-  fixed: FixedExpense[] = [],
+  allExpenses: Expense[],
+  allFixed: FixedExpense[] = [],
   members: Member[] = [],
-  opts: { budgetAware?: boolean } = {},
+  budgets: Record<string, MemberBudget> = {},
+  scope: string | null = null,
 ): MonthAnalysis {
-  const budgetAware = opts.budgetAware ?? true;
   const [y, m] = month.split('-').map(Number);
   const dim = daysInMonth(y, m - 1);
   const now = new Date();
@@ -66,11 +71,19 @@ export function analyzeMonth(
   const elapsedDays = month < current ? dim : isFuture ? 0 : now.getDate();
   const daysLeft = isCurrent ? dim - now.getDate() + 1 : isFuture ? dim : 0;
 
+  // Scope: one member's own spending and obligations, or the whole family
+  const expenses = scope ? allExpenses.filter((e) => expenseOwner(e, allFixed) === scope) : allExpenses;
+  const fixed = scope ? allFixed.filter((f) => f.ownerId === scope) : allFixed;
+  const scopedBudgets = scope ? (budgets[scope] ? [budgets[scope]] : []) : members.map((x) => budgets[x.id]).filter(Boolean);
+  const catBudget = (id: string) => scopedBudgets.reduce((a, b) => a + (b.cats[id] ?? 0), 0);
+
   const inMonth = expenses.filter((e) => e.date.startsWith(month));
   const prevMonth = shiftMonth(month, -1);
   const inPrev = expenses.filter((e) => e.date.startsWith(prevMonth));
   const totalSpent = sum(inMonth);
-  const totalBudget = budgetAware ? categories.reduce((a, c) => a + (c.monthlyBudget || 0), 0) : 0;
+  const totalBudget = scopedBudgets.reduce((a, b) => a + b.total, 0);
+  const allocated = categories.reduce((a, c) => a + catBudget(c.id), 0);
+  const budgetAware = totalBudget > 0;
 
   const daily = Array.from({ length: dim }, () => 0);
   const weekday = Array(7).fill(0);
@@ -102,7 +115,7 @@ export function analyzeMonth(
     .map((c) => {
       const spent = sum(inMonth.filter((e) => e.categoryId === c.id));
       const prevSpent = sum(inPrev.filter((e) => e.categoryId === c.id));
-      const budget = budgetAware ? c.monthlyBudget || 0 : 0;
+      const budget = catBudget(c.id);
       const pct = budget > 0 ? spent / budget : 0;
       // Unpaid obligations in this category are certain to land, so count them in the projection
       const reserved = month >= current ? fixedStatus.filter((s) => !s.paid && s.fixed.categoryId === c.id).reduce((a, s) => a + s.fixed.amount, 0) : 0;
@@ -113,11 +126,12 @@ export function analyzeMonth(
     })
     .sort((a, b) => b.spent - a.spent);
 
-  const memberIds = Array.from(new Set([...members.map((x) => x.id), ...inMonth.map((e) => e.userId)]));
+  const ownerOf = (e: Expense) => expenseOwner(e, allFixed);
+  const memberIds = Array.from(new Set([...members.map((x) => x.id), ...inMonth.map(ownerOf)]));
   const byMember: MemberStat[] = memberIds
     .map((id) => {
-      const mine = inMonth.filter((e) => e.userId === id);
-      return { member: members.find((x) => x.id === id) ?? null, userId: id, spent: sum(mine), count: mine.length };
+      const mine = inMonth.filter((e) => ownerOf(e) === id);
+      return { member: members.find((x) => x.id === id) ?? null, userId: id, spent: sum(mine), count: mine.length, budget: id ? budgets[id]?.total ?? 0 : 0 };
     })
     .filter((s) => s.member || s.count > 0)
     .sort((a, b) => b.spent - a.spent);
@@ -184,7 +198,12 @@ export function analyzeMonth(
     const top = byCategory[0];
     if (top && totalSpent > 0)
       insights.push({ tone: 'info', text: `${top.category.name} أكبر بند هذا الشهر، ${Math.round((top.spent / totalSpent) * 100)}% من مجموع الصرف.` });
-    if (byMember.filter((s) => s.spent > 0).length > 1 && totalSpent > 0) {
+    if (!scope) {
+      byMember
+        .filter((s) => s.member && s.budget > 0 && s.spent > s.budget)
+        .forEach((s) => insights.push({ tone: 'bad', text: `${s.member!.displayName} تجاوز بادجته الشخصي بـ ${fmt(s.spent - s.budget)}.` }));
+    }
+    if (!scope && byMember.filter((s) => s.spent > 0).length > 1 && totalSpent > 0) {
       const t = byMember[0];
       insights.push({ tone: 'info', text: `${t.member?.displayName ?? 'عضو سابق'} صرف ${Math.round((t.spent / totalSpent) * 100)}% من مصاريف الشهر.` });
     }
@@ -194,8 +213,16 @@ export function analyzeMonth(
     }
   }
 
+  if (!budgetAware && isCurrent) {
+    insights.unshift({ tone: 'warn', text: scope ? 'ما في بادجت محدد لهذا الشهر. حدّده من الإعدادات ← البادجت الشهري.' : 'ما في بادجت محدد للعائلة لهذا الشهر. حدّدوه من الإعدادات ← البادجت الشهري.' });
+  }
+  if (budgetAware && allocated > totalBudget) {
+    insights.push({ tone: 'warn', text: `مجموع حصص التصنيفات (${fmt(allocated)}) أكبر من البادجت الكلي (${fmt(totalBudget)}).` });
+  }
+
   return {
     month, isCurrent, count: inMonth.length, totalSpent, totalBudget,
+    allocated, unallocated: Math.max(totalBudget - allocated, 0), hasBudget: budgetAware, scope,
     dailyAllowance: totalBudget / dim, daysInMonth: dim, elapsedDays, daysLeft,
     dailyAvg, projectedTotal, pendingFixed, safeDaily, todaySpent, daily, weekday,
     byCategory, byMember, fixedStatus, insights,

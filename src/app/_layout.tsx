@@ -36,6 +36,7 @@ function Gate() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="settings/family" />
         <Stack.Screen name="settings/budgets" />
+        <Stack.Screen name="settings/categories" />
         <Stack.Screen name="settings/fixed" />
         <Stack.Screen name="settings/account" />
       </Stack.Protected>

@@ -10,10 +10,11 @@ import { Card, CatTile, Icon, Money, Row, T } from '../../ui';
 import { monthKey, num } from '../../utils';
 
 export default function FixedScreen() {
-  const { fixed, categories, expenses, members } = useFamily();
+  const { fixed, categories, expenses, members, memberOf, budgetsFor } = useFamily();
   const [editing, setEditing] = useState<FixedExpense | null>(null);
   const [open, setOpen] = useState(false);
-  const a = useMemo(() => analyzeMonth(monthKey(new Date()), categories, expenses, fixed, members), [categories, expenses, fixed, members]);
+  const month = monthKey(new Date());
+  const a = useMemo(() => analyzeMonth(month, categories, expenses, fixed, members, budgetsFor(month)), [month, categories, expenses, fixed, members, budgetsFor]);
   const paid = (id: string) => a.fixedStatus.find((s) => s.fixed.id === id)?.paid;
   const active = fixed.filter((f) => f.active);
   const total = active.reduce((s, f) => s + f.amount, 0);
@@ -56,6 +57,7 @@ export default function FixedScreen() {
                   <T w="semibold">{f.name}</T>
                   <T size={TS.small} color={C.sub}>
                     {f.active ? `يستحق يوم ${f.dueDay} كل شهر` : 'موقّف'}، {cat?.name}
+                    {members.length > 1 ? `، على ${memberOf(f.ownerId)?.displayName ?? 'غير محدد'}` : ''}
                   </T>
                 </View>
                 <View style={{ alignItems: 'flex-start' }}>
@@ -85,7 +87,7 @@ export default function FixedScreen() {
           <Row style={{ gap: 8, marginTop: 16, paddingHorizontal: 4 }}>
             <Icon name="information-outline" size={18} color={C.sub} />
             <T size={TS.small} color={C.sub} style={{ flex: 1 }}>
-              الإجبارية بتاخد {Math.round((total / a.totalBudget) * 100)}% من البادجت الشهري ({num(a.totalBudget)} درهم).
+              الإجبارية بتاخد {Math.round((total / a.totalBudget) * 100)}% من بادجت العائلة لهذا الشهر ({num(a.totalBudget)} درهم).
             </T>
           </Row>
         )}

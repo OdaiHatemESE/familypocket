@@ -9,6 +9,7 @@ import { useTabs } from '../tabsContext';
 import { C, TS } from '../theme';
 import { Avatar, Bar, Card, CatTile, Icon, IconName, Money, PrimaryButton, Row, SectionHead, T } from '../ui';
 import { num, shiftMonth, todayKey } from '../utils';
+import { expenseOwner } from '../budgets';
 
 export const toneStyle: Record<Insight['tone'], { color: string; icon: IconName }> = {
   bad: { color: C.pom, icon: 'arrow-up-bold-circle-outline' },
@@ -33,15 +34,19 @@ export function InsightList({ items }: { items: Insight[] }) {
 }
 
 export function Home() {
-  const { categories, expenses, fixed, members, memberOf, markFixedPaid, refresh } = useFamily();
-  const { month, setMonth, openAdd, openExpense } = useTabs();
+  const { categories, expenses, fixed, members, memberOf, markFixedPaid, refresh, budgetsFor } = useFamily();
+  const { month, setMonth, openAdd, openExpense, scope } = useTabs();
   const [paying, setPaying] = useState<string | null>(null);
   const [payError, setPayError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const a = useMemo(() => analyzeMonth(month, categories, expenses, fixed, members), [month, categories, expenses, fixed, members]);
+  const budgets = useMemo(() => budgetsFor(month), [budgetsFor, month]);
+  const a = useMemo(
+    () => analyzeMonth(month, categories, expenses, fixed, members, budgets, scope),
+    [month, categories, expenses, fixed, members, budgets, scope],
+  );
   const recent = useMemo(
-    () => expenses.filter((e) => e.date.startsWith(month)).sort((x, y) => (x.date === y.date ? y.createdAt - x.createdAt : x.date < y.date ? 1 : -1)).slice(0, 5),
-    [expenses, month],
+    () => expenses.filter((e) => e.date.startsWith(month) && (!scope || expenseOwner(e, fixed) === scope)).sort((x, y) => (x.date === y.date ? y.createdAt - x.createdAt : x.date < y.date ? 1 : -1)).slice(0, 5),
+    [expenses, month, scope, fixed],
   );
   const catOf = (id: string) => categories.find((c) => c.id === id);
   const family = members.length > 1;
@@ -150,27 +155,45 @@ export function Home() {
               </>
             )}
 
-            {family && a.totalSpent > 0 && (
+            {family && !scope && (a.totalSpent > 0 || a.hasBudget) && (
               <>
-                <SectionHead title="مين صرف" />
-                <Card style={{ padding: 16, gap: 14 }}>
-                  {a.byMember.map((s) => (
-                    <Row key={s.userId ?? 'former'} style={{ gap: 12 }}>
-                      <Avatar name={s.member?.displayName ?? '؟'} color={s.member?.color ?? C.faint} size={34} />
-                      <View style={{ flex: 1 }}>
-                        <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-                          <T w="medium">{s.member?.displayName ?? 'عضو سابق'}</T>
-                          <Money value={s.spent} />
-                        </Row>
-                        <Bar pct={a.totalSpent ? s.spent / a.totalSpent : 0} color={s.member?.color ?? C.faint} />
-                      </View>
-                    </Row>
-                  ))}
+                <SectionHead title="بادجت كل فرد" action="تعديل" onAction={() => router.push('/settings/budgets')} />
+                <Card style={{ padding: 16, gap: 16 }}>
+                  {a.byMember.map((s) => {
+                    const pct = s.budget > 0 ? s.spent / s.budget : 0;
+                    const over = s.budget > 0 && s.spent > s.budget;
+                    return (
+                      <Row key={s.userId ?? 'former'} style={{ gap: 12 }}>
+                        <Avatar name={s.member?.displayName ?? '؟'} color={s.member?.color ?? C.faint} size={34} />
+                        <View style={{ flex: 1 }}>
+                          <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                            <T w="medium">{s.member?.displayName ?? 'عضو سابق'}</T>
+                            <Money value={s.spent} color={over ? C.pom : C.text} />
+                          </Row>
+                          {s.budget > 0 ? (
+                            <>
+                              <Bar pct={pct} color={over ? C.pom : pct > 0.8 ? C.saffron : s.member?.color ?? C.faint} />
+                              <T size={TS.tiny} color={over ? C.pom : C.sub} style={{ marginTop: 4 }}>
+                                {over ? `فوق بادجته بـ ${num(s.spent - s.budget)} من أصل ${num(s.budget)}` : `باقي ${num(s.budget - s.spent)} من أصل ${num(s.budget)}`}
+                              </T>
+                            </>
+                          ) : (
+                            <T size={TS.tiny} color={C.faint}>{s.member ? 'ما إله بادجت لهذا الشهر' : 'مصاريف عضو سابق'}</T>
+                          )}
+                        </View>
+                      </Row>
+                    );
+                  })}
                 </Card>
               </>
             )}
 
             <SectionHead title="البادجت حسب التصنيف" action="تعديل" onAction={() => router.push('/settings/budgets')} />
+            {a.hasBudget && (
+              <T size={TS.small} color={C.sub} style={{ marginTop: -6, marginBottom: 10 }}>
+                موزّع {num(a.allocated)} من {num(a.totalBudget)}{a.unallocated > 0 ? `، وغير موزّع ${num(a.unallocated)}` : ''}
+              </T>
+            )}
             <Card style={{ paddingVertical: 4 }}>
               {a.byCategory.map((s, i) => {
                 const barColor = s.status === 'over' ? C.pom : s.status === 'warning' ? C.saffron : s.category.color;
@@ -189,7 +212,7 @@ export function Home() {
                             ? s.spent > s.budget
                               ? `فوق البادجت بـ ${num(s.spent - s.budget)} من أصل ${num(s.budget)}`
                               : `باقي ${num(s.budget - s.spent)} من أصل ${num(s.budget)}`
-                            : 'بدون بادجت'}
+                            : 'بدون حصة لهذا الشهر'}
                         </T>
                       </View>
                     </Row>

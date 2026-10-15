@@ -5,6 +5,7 @@ import { MonthAnalysis } from '../analysis';
 import { C, TS } from '../theme';
 import { Icon, Money, Row, T } from '../ui';
 import { monthLabel, num } from '../utils';
+import { ScopeSwitch } from './ScopeSwitch';
 
 const STRIP_H = 64;
 const CAP = 2; // a day at 2× the daily allowance fills the full height
@@ -15,7 +16,8 @@ const CAP = 2; // a day at 2× the daily allowance fills the full height
  */
 function DayStrip({ a }: { a: MonthAnalysis }) {
   const today = a.isCurrent ? new Date().getDate() : -1;
-  const allowance = a.dailyAllowance || 1;
+  // Without a budget, scale bars to the busiest day and colour them neutrally
+  const allowance = a.dailyAllowance || Math.max(...a.daily, 1) / 1.5;
   const lineY = STRIP_H / CAP;
   return (
     <View>
@@ -24,7 +26,7 @@ function DayStrip({ a }: { a: MonthAnalysis }) {
           const day = i + 1;
           const future = a.isCurrent ? day > today : a.elapsedDays === 0;
           const ratio = Math.min(v / allowance, CAP) / CAP;
-          const over = v > allowance;
+          const over = a.hasBudget && v > allowance;
           const color = over ? C.pomLight : C.oasisLight;
           return (
             <View key={i} style={{ flex: 1, height: STRIP_H, justifyContent: 'flex-end' }}>
@@ -46,14 +48,14 @@ function DayStrip({ a }: { a: MonthAnalysis }) {
             </View>
           );
         })}
-        <View
+        {a.hasBudget && <View
           pointerEvents="none"
           style={{ position: 'absolute', left: 0, right: 0, bottom: lineY, borderTopWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.35)' }}
-        />
+        />}
       </View>
       <Row style={{ justifyContent: 'space-between', marginTop: 12 }}>
         <T size={TS.tiny} color={C.inkMuted}>1</T>
-        <T size={TS.tiny} color={C.inkMuted}>الخط = حصتك اليومية ({num(allowance)} درهم)</T>
+        <T size={TS.tiny} color={C.inkMuted}>{a.hasBudget ? `الخط = الحصة اليومية (${num(allowance)} درهم)` : 'الصرف اليومي'}</T>
         <T size={TS.tiny} color={C.inkMuted}>{a.daysInMonth}</T>
       </Row>
     </View>
@@ -71,21 +73,25 @@ export function Hero({
 }) {
   const insets = useSafeAreaInsets();
   const remaining = a.totalBudget - a.totalSpent;
-  const overMonth = remaining < 0;
+  const overMonth = a.hasBudget && remaining < 0;
 
+  const solo = !!a.scope;
   let label: string;
   let value: number;
   let valueColor = '#fff';
-  if (a.isCurrent && !overMonth) {
-    label = 'تقدروا تصرفوا اليوم';
+  if (!a.hasBudget) {
+    label = `مجموع صرف ${monthLabel(a.month)}`;
+    value = a.totalSpent;
+  } else if (a.isCurrent && !overMonth) {
+    label = solo ? 'تقدر تصرف اليوم' : 'تقدروا تصرفوا اليوم';
     value = Math.max(a.safeDaily - a.todaySpent, 0);
     if (a.todaySpent > a.safeDaily) {
-      label = 'تجاوزت حصة اليوم بـ';
+      label = 'تجاوز حصة اليوم بـ';
       value = a.todaySpent - a.safeDaily;
       valueColor = C.pomLight;
     }
   } else if (overMonth) {
-    label = 'تجاوزت بادجت الشهر بـ';
+    label = 'تجاوز بادجت الشهر بـ';
     value = -remaining;
     valueColor = C.pomLight;
   } else {
@@ -114,14 +120,19 @@ export function Hero({
         </Pressable>
       </Row>
 
+      <ScopeSwitch dark style={{ paddingTop: 12 }} />
+
       <View style={{ marginTop: 18 }}>
         <T size={TS.body} color={C.inkMuted}>{label}</T>
         <Money value={value} size={TS.hero} color={valueColor} w="bold" />
-        {a.isCurrent && !overMonth && a.daysLeft > 0 && (
+        {!a.hasBudget && (
+          <T size={TS.small} color={C.inkMuted}>ما في بادجت محدد لهذا الشهر. حدّده من الإعدادات ← البادجت الشهري.</T>
+        )}
+        {a.hasBudget && a.isCurrent && !overMonth && a.daysLeft > 0 && (
           <T size={TS.small} color={C.inkMuted}>
             {a.pendingFixed > 0
-              ? `بعد حجز ${num(a.pendingFixed)} درهم للمصاريف الإجبارية، حصتكم ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`
-              : `حتى تخلصوا الشهر ضمن البادجت، حصتكم ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`}
+              ? `بعد حجز ${num(a.pendingFixed)} درهم للمصاريف الإجبارية، ${solo ? 'حصتك' : 'حصتكم'} ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`
+              : `حتى ${solo ? 'تخلص' : 'تخلصوا'} الشهر ضمن البادجت، ${solo ? 'حصتك' : 'حصتكم'} ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`}
           </T>
         )}
       </View>
