@@ -1,103 +1,95 @@
-import React from 'react';
-import { Pressable, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MonthAnalysis } from '../analysis';
-import { C, TS } from '../theme';
+import { C, F, TS } from '../theme';
 import { Icon, Money, Row, T } from '../ui';
-import { monthLabel, num } from '../utils';
+import { monthLabel, monthName, num } from '../utils';
 import { ScopeSwitch } from './ScopeSwitch';
 
-const STRIP_H = 64;
-const CAP = 2; // a day at 2× the daily allowance fills the full height
+const STRIP_H = 56;
 
-/**
- * The month as a strip of days. Each day's bar is that day's spend measured
- * against the daily allowance (the dashed line).
- */
+/** Counts up (or down) to `value` whenever it changes, like a meter */
+function useCounter(value: number) {
+  const [shown, setShown] = useState(value);
+  const from = useRef(value);
+  useEffect(() => {
+    let raf = 0;
+    let cancelled = false;
+    const start = from.current;
+    if (start === value) return;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduce) => {
+        if (cancelled) return;
+        if (reduce) {
+          from.current = value;
+          setShown(value);
+          return;
+        }
+        const t0 = Date.now();
+        const dur = 700;
+        const tick = () => {
+          const p = Math.min((Date.now() - t0) / dur, 1);
+          const eased = 1 - Math.pow(1 - p, 3);
+          const v = start + (value - start) * eased;
+          from.current = v;
+          setShown(v);
+          if (p < 1) raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [value]);
+  return shown;
+}
+
+/** The month as a strip of days; each bar is that day's spending */
 function DayStrip({ a }: { a: MonthAnalysis }) {
   const today = a.isCurrent ? new Date().getDate() : -1;
-  // Without a budget, scale bars to the busiest day and colour them neutrally
-  const allowance = a.dailyAllowance || Math.max(...a.daily, 1) / 1.5;
-  const lineY = STRIP_H / CAP;
+  const max = Math.max(...a.daily, 1);
   return (
     <View>
       <View style={{ height: STRIP_H, flexDirection: 'row-reverse', alignItems: 'flex-end', gap: 2 }}>
         {a.daily.map((v, i) => {
           const day = i + 1;
           const future = a.isCurrent ? day > today : a.elapsedDays === 0;
-          const ratio = Math.min(v / allowance, CAP) / CAP;
-          const over = a.hasBudget && v > allowance;
-          const color = over ? C.pomLight : C.oasisLight;
           return (
             <View key={i} style={{ flex: 1, height: STRIP_H, justifyContent: 'flex-end' }}>
-              {future ? (
-                <View style={{ height: 3, borderRadius: 2, backgroundColor: C.inkSoft }} />
-              ) : (
-                <View
-                  style={{
-                    height: Math.max(ratio * STRIP_H, 3),
-                    borderRadius: 2,
-                    backgroundColor: v === 0 ? C.inkSoft : color,
-                    opacity: day === today ? 1 : 0.85,
-                  }}
-                />
-              )}
-              {day === today && (
-                <View style={{ position: 'absolute', bottom: -9, alignSelf: 'center', width: 4, height: 4, borderRadius: 2, backgroundColor: '#fff' }} />
-              )}
+              <View
+                style={{
+                  height: future || v === 0 ? 3 : Math.max((v / max) * STRIP_H, 3),
+                  borderRadius: 2,
+                  backgroundColor: future || v === 0 ? C.inkSoft : day === today ? '#fff' : C.oasisLight,
+                  opacity: day === today ? 1 : 0.85,
+                }}
+              />
             </View>
           );
         })}
-        {a.hasBudget && <View
-          pointerEvents="none"
-          style={{ position: 'absolute', left: 0, right: 0, bottom: lineY, borderTopWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.35)' }}
-        />}
       </View>
-      <Row style={{ justifyContent: 'space-between', marginTop: 12 }}>
+      <Row style={{ justifyContent: 'space-between', marginTop: 8 }}>
         <T size={TS.tiny} color={C.inkMuted}>1</T>
-        <T size={TS.tiny} color={C.inkMuted}>{a.hasBudget ? `الخط = الحصة اليومية (${num(allowance)} درهم)` : 'الصرف اليومي'}</T>
+        <T size={TS.tiny} color={C.inkMuted}>الصرف يوم بيوم</T>
         <T size={TS.tiny} color={C.inkMuted}>{a.daysInMonth}</T>
       </Row>
     </View>
   );
 }
 
-export function Hero({
-  a,
-  onPrev,
-  onNext,
-}: {
-  a: MonthAnalysis;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
+export function Hero({ a, onPrev, onNext }: { a: MonthAnalysis; onPrev: () => void; onNext: () => void }) {
   const insets = useSafeAreaInsets();
-  const remaining = a.totalBudget - a.totalSpent;
-  const overMonth = a.hasBudget && remaining < 0;
-
+  const shown = useCounter(a.totalSpent);
   const solo = !!a.scope;
-  let label: string;
-  let value: number;
-  let valueColor = '#fff';
-  if (!a.hasBudget) {
-    label = `مجموع صرف ${monthLabel(a.month)}`;
-    value = a.totalSpent;
-  } else if (a.isCurrent && !overMonth) {
-    label = solo ? 'تقدر تصرف اليوم' : 'تقدروا تصرفوا اليوم';
-    value = Math.max(a.safeDaily - a.todaySpent, 0);
-    if (a.todaySpent > a.safeDaily) {
-      label = 'تجاوز حصة اليوم بـ';
-      value = a.todaySpent - a.safeDaily;
-      valueColor = C.pomLight;
-    }
-  } else if (overMonth) {
-    label = 'تجاوز بادجت الشهر بـ';
-    value = -remaining;
-    valueColor = C.pomLight;
-  } else {
-    label = `مجموع صرف ${monthLabel(a.month)}`;
-    value = a.totalSpent;
-  }
+  const remaining = a.totalBudget - a.totalSpent;
+  const over = a.hasBudget && remaining < 0;
+  const pct = a.hasBudget ? a.totalSpent / a.totalBudget : 0;
+  const barColor = over ? C.pomLight : pct > 0.85 ? C.saffronLight : C.oasisLight;
+
+  const label = a.isCurrent ? (solo ? 'صرفت هذا الشهر' : 'صرفنا هذا الشهر') : `مجموع صرف ${monthName(a.month)}`;
 
   return (
     <View
@@ -105,52 +97,66 @@ export function Hero({
         backgroundColor: C.ink,
         paddingTop: insets.top + 12,
         paddingHorizontal: 20,
-        paddingBottom: 28,
+        paddingBottom: 24,
         borderBottomLeftRadius: 32,
         borderBottomRightRadius: 32,
       }}
     >
       <Row style={{ justifyContent: 'space-between' }}>
-        <Pressable onPress={onPrev} hitSlop={14} style={{ padding: 6 }}>
+        <Pressable onPress={onPrev} hitSlop={14} style={{ padding: 6 }} accessibilityLabel="الشهر السابق">
           <Icon name="chevron-right" size={24} color={C.inkMuted} />
         </Pressable>
         <T w="medium" size={TS.body} color="#fff">{monthLabel(a.month)}</T>
-        <Pressable onPress={onNext} hitSlop={14} style={{ padding: 6, opacity: a.isCurrent ? 0.25 : 1 }} disabled={a.isCurrent}>
+        <Pressable onPress={onNext} hitSlop={14} style={{ padding: 6, opacity: a.isCurrent ? 0.25 : 1 }} disabled={a.isCurrent} accessibilityLabel="الشهر التالي">
           <Icon name="chevron-left" size={24} color={C.inkMuted} />
         </Pressable>
       </Row>
 
       <ScopeSwitch dark style={{ paddingTop: 12 }} />
 
-      <View style={{ marginTop: 18 }}>
+      {/* The meter: total spent this month, counting up */}
+      <View style={{ marginTop: 18 }} accessible accessibilityLabel={`${label} ${num(a.totalSpent)} درهم`}>
         <T size={TS.body} color={C.inkMuted}>{label}</T>
-        <Money value={value} size={TS.hero} color={valueColor} w="bold" />
-        {!a.hasBudget && (
-          <T size={TS.small} color={C.inkMuted}>ما في بادجت محدد لهذا الشهر. حدّده من الإعدادات ← البادجت الشهري.</T>
-        )}
-        {a.hasBudget && a.isCurrent && !overMonth && a.daysLeft > 0 && (
-          <T size={TS.small} color={C.inkMuted}>
-            {a.pendingFixed > 0
-              ? `بعد حجز ${num(a.pendingFixed)} درهم للمصاريف الإجبارية، ${solo ? 'حصتك' : 'حصتكم'} ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`
-              : `حتى ${solo ? 'تخلص' : 'تخلصوا'} الشهر ضمن البادجت، ${solo ? 'حصتك' : 'حصتكم'} ${num(a.safeDaily)} درهم باليوم لـ ${a.daysLeft} يوم.`}
-          </T>
-        )}
+        <View style={{ flexDirection: 'row-reverse', alignItems: 'baseline' }}>
+          <Text style={{ fontFamily: F.bold, fontSize: TS.hero, color: over ? C.pomLight : '#fff', letterSpacing: -1.5, fontVariant: ['tabular-nums'] }}>
+            {Math.round(shown).toLocaleString('en-US')}
+          </Text>
+          <Text style={{ fontFamily: F.medium, fontSize: 20, color: '#fff', opacity: 0.65, marginRight: 6 }}>درهم</Text>
+        </View>
       </View>
+
+      {a.hasBudget ? (
+        <View style={{ marginTop: 10 }}>
+          <View style={{ height: 10, borderRadius: 5, backgroundColor: C.inkSoft, overflow: 'hidden', flexDirection: 'row-reverse' }}>
+            <View style={{ width: `${Math.min(pct, 1) * 100}%`, backgroundColor: barColor, borderRadius: 5 }} />
+          </View>
+          <Row style={{ justifyContent: 'space-between', marginTop: 8 }}>
+            <T size={TS.small} color={C.inkMuted}>من أصل {num(a.totalBudget)} درهم ({Math.round(pct * 100)}%)</T>
+            <T size={TS.small} w="semibold" color={over ? C.pomLight : C.oasisLight}>
+              {over ? `تجاوز ${num(-remaining)}` : `باقي ${num(remaining)}`}
+            </T>
+          </Row>
+        </View>
+      ) : (
+        <T size={TS.small} color={C.inkMuted} style={{ marginTop: 6 }}>
+          ما في بادجت لهذا الشهر. حدّده من الإعدادات ← البادجت الشهري.
+        </T>
+      )}
 
       <View style={{ marginTop: 22 }}>
         <DayStrip a={a} />
       </View>
 
-      <Row style={{ marginTop: 22, gap: 12 }}>
-        <Figure label="صرفت" value={a.totalSpent} />
+      <Row style={{ marginTop: 18, gap: 12 }}>
+        {a.isCurrent && (
+          <>
+            <Figure label="اليوم" value={a.todaySpent} />
+            <View style={{ width: 1, alignSelf: 'stretch', backgroundColor: C.inkSoft }} />
+          </>
+        )}
+        <Figure label="متوسط اليوم" value={a.dailyAvg} />
         <View style={{ width: 1, alignSelf: 'stretch', backgroundColor: C.inkSoft }} />
-        <Figure label="البادجت" value={a.totalBudget} />
-        <View style={{ width: 1, alignSelf: 'stretch', backgroundColor: C.inkSoft }} />
-        <Figure
-          label={overMonth ? 'التجاوز' : 'الباقي'}
-          value={Math.abs(remaining)}
-          color={overMonth ? C.pomLight : C.oasisLight}
-        />
+        <Figure label="إجباري لسه ما انتدفع" value={a.pendingFixed} color={a.pendingFixed ? C.saffronLight : '#fff'} />
       </Row>
     </View>
   );
@@ -159,7 +165,7 @@ export function Hero({
 function Figure({ label, value, color = '#fff' }: { label: string; value: number; color?: string }) {
   return (
     <View style={{ flex: 1 }}>
-      <T size={TS.tiny} color={C.inkMuted}>{label}</T>
+      <T size={TS.tiny} color={C.inkMuted} numberOfLines={1}>{label}</T>
       <Money value={value} size={17} color={color} />
     </View>
   );
