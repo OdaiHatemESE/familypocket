@@ -19,7 +19,9 @@ export function ExpenseRow({
   onPress: () => void;
   last?: boolean;
 }) {
-  const sub = [e.note ? cat?.name : null, showMember ? member?.displayName ?? 'عضو سابق' : null].filter(Boolean).join('، ');
+  const items = e.lines.length ? (e.lines.length === 1 ? 'صنف واحد' : `${e.lines.length} أصناف`) : null;
+  const sub = [items, e.note && !items ? cat?.name : null, showMember ? member?.displayName ?? 'عضو سابق' : null].filter(Boolean).join('، ');
+  const title = e.note || (e.lines.length ? e.lines.map((l) => l.name).slice(0, 2).join('، ') : cat?.name) || 'بدون تصنيف';
   return (
     <Pressable
       onPress={onPress}
@@ -44,8 +46,9 @@ export function ExpenseRow({
       </View>
       <View style={{ flex: 1, marginRight: 12 }}>
         <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 6 }}>
-          <T w="medium" numberOfLines={1} style={{ flexShrink: 1 }}>{e.note || cat?.name || 'بدون تصنيف'}</T>
+          <T w="medium" numberOfLines={1} style={{ flexShrink: 1 }}>{title}</T>
           {e.fixedId && <Icon name="calendar-check-outline" size={15} color={C.oasis} />}
+          {e.lines.length > 0 && <Icon name="receipt-text-outline" size={15} color={C.sub} />}
         </View>
         {!!sub && <T size={TS.small} color={C.sub} numberOfLines={1}>{sub}</T>}
       </View>

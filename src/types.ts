@@ -29,6 +29,25 @@ export type Expense = {
   note: string;
   date: string; // YYYY-MM-DD
   createdAt: number;
+  /** Receipt lines; empty for a single-amount expense */
+  lines: ExpenseLine[];
+};
+
+/** Units an item can be measured in */
+export const UNITS = ['حبة', 'علبة', 'كيلو', 'غرام', 'لتر', 'ربطة', 'كيس', 'كرتونة', 'عبوة', 'رغيف'] as const;
+
+/** Something the family buys, under a category (e.g. منظفات ← دواء جلي، علبة) */
+export type Item = { id: string; categoryId: string; name: string; unit: string; archived: boolean };
+
+/** One line on a receipt */
+export type ExpenseLine = {
+  id?: string;
+  itemId: string | null;
+  categoryId: string;
+  name: string;
+  unit: string;
+  quantity: number;
+  amount: number; // line total
 };
 
 /** A recurring monthly obligation: rent, school instalment, utilities… */

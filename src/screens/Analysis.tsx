@@ -7,6 +7,7 @@ import { useTabs } from '../tabsContext';
 import { C, TS } from '../theme';
 import { Icon, Money, Row, SectionHead, T } from '../ui';
 import { ScopeSwitch } from '../components/ScopeSwitch';
+import { ItemsAnalysis } from '../components/ItemsAnalysis';
 import { expenseOwner } from '../budgets';
 import { AR_DAYS_SHORT, monthName, num } from '../utils';
 import { InsightList } from './Home';
@@ -86,6 +87,8 @@ export function Analysis() {
             </>
           )}
         </View>
+
+        <ItemsAnalysis month={month} expenses={scoped} />
 
         <SectionHead title="آخر ٦ شهور" />
         <View style={card}>

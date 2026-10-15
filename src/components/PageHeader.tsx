@@ -16,7 +16,7 @@ export function PageHeader({
   title: string;
   month?: string;
   setMonth?: (m: string) => void;
-  back?: boolean;
+  back?: boolean | string;
   children?: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
@@ -31,7 +31,7 @@ export function PageHeader({
           style={{ flexDirection: 'row-reverse', alignItems: 'center', alignSelf: 'flex-end', paddingVertical: 6, marginBottom: 2 }}
         >
           <Icon name="chevron-right" size={22} color={C.oasis} />
-          <T w="medium" size={TS.body} color={C.oasis}>الإعدادات</T>
+          <T w="medium" size={TS.body} color={C.oasis}>{typeof back === 'string' ? back : 'الإعدادات'}</T>
         </Pressable>
       )}
       <Row style={{ justifyContent: 'space-between' }}>

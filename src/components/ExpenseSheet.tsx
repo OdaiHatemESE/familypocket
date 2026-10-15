@@ -1,11 +1,13 @@
 import * as Haptics from 'expo-haptics';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Platform, Pressable, TextInput, View } from 'react-native';
+import { qtyLabel } from '../budgets';
 import { useFamily } from '../family';
 import { C, F, TS } from '../theme';
-import { Expense } from '../types';
-import { Avatar, CatTile, HScroll, Icon, Money, PrimaryButton, Row, T } from '../ui';
-import { dayLabel, shortDay, toKey } from '../utils';
+import { Expense, ExpenseLine, Item } from '../types';
+import { Avatar, CatTile, ErrorText, HScroll, Icon, Money, PrimaryButton, Row, T } from '../ui';
+import { dayLabel, num, parseAmount, shortDay, toKey } from '../utils';
+import { CategoryPicker, UnitPicker } from './ItemSheet';
 import { Sheet } from './Sheet';
 
 const tap = () => {
@@ -21,6 +23,18 @@ const lastDays = (n: number) =>
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'];
 
+const inputStyle = {
+  fontFamily: F.regular,
+  fontSize: TS.body,
+  textAlign: 'right' as const,
+  writingDirection: 'rtl' as const,
+  color: C.text,
+  backgroundColor: C.paper,
+  borderRadius: 14,
+  paddingHorizontal: 14,
+  paddingVertical: 12,
+};
+
 type Props = { visible: boolean; onClose: () => void; editing?: Expense | null };
 
 /** Mounted fresh each time it opens, so the form always starts from `editing` */
@@ -29,19 +43,47 @@ export function ExpenseSheet(props: Props) {
   return <ExpenseForm key={props.editing?.id ?? 'new'} {...props} />;
 }
 
+type View_ = 'main' | 'pick' | 'line';
+type Draft = { index: number | null; itemId: string | null; name: string; unit: string; categoryId: string; qty: string; amount: string };
+
 function ExpenseForm({ visible, onClose, editing }: Props) {
-  const { categories, me, memberOf, addExpense, updateExpense, deleteExpense } = useFamily();
-  const [busy, setBusy] = useState(false);
+  const { categories, items, expenses, me, memberOf, addExpense, updateExpense, deleteExpense, saveItem } = useFamily();
   const readOnly = !!editing && editing.userId !== me?.id;
-  const [amount, setAmount] = useState(editing ? String(editing.amount) : '');
+  const [mode, setMode] = useState<'amount' | 'receipt'>(editing?.lines.length ? 'receipt' : 'amount');
+  const [view, setView] = useState<View_>('main');
+  const [amount, setAmount] = useState(editing && !editing.lines.length ? String(editing.amount) : '');
+  const [lines, setLines] = useState<ExpenseLine[]>(editing?.lines ?? []);
   const [note, setNote] = useState(editing?.note ?? '');
   const [catId, setCatId] = useState(editing?.categoryId ?? '');
   const [date, setDate] = useState(editing?.date ?? toKey(new Date()));
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // item picker + line editor state
+  const [query, setQuery] = useState('');
+  const [newItem, setNewItem] = useState<{ categoryId: string; unit: string } | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
 
   const days = lastDays(14);
   if (editing && !days.includes(editing.date)) days.push(editing.date);
+  const linesTotal = lines.reduce((a, l) => a + l.amount, 0);
+  const catOf = (id: string) => categories.find((c) => c.id === id);
+
+  // How often each item was bought, to list frequent items first; and its last unit price
+  const usage = useMemo(() => {
+    const count = new Map<string, number>();
+    const last = new Map<string, { price: number; date: string }>();
+    for (const e of expenses) {
+      for (const l of e.lines) {
+        if (!l.itemId) continue;
+        count.set(l.itemId, (count.get(l.itemId) ?? 0) + 1);
+        const prev = last.get(l.itemId);
+        if (!prev || e.date > prev.date) last.set(l.itemId, { price: l.quantity ? l.amount / l.quantity : 0, date: e.date });
+      }
+    }
+    return { count, last };
+  }, [expenses]);
 
   const press = (k: string) => {
     tap();
@@ -57,10 +99,20 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
   };
 
   const save = async () => {
-    const n = parseFloat(amount);
-    if (!(n > 0)) return setError('اكتب المبلغ أولاً');
-    if (!catId) return setError('اختر تصنيف المصروف');
-    const data = { amount: n, note: note.trim(), categoryId: catId, date, fixedId: editing?.fixedId ?? null };
+    let data;
+    if (mode === 'receipt') {
+      if (!lines.length) return setError('أضف صنف واحد على الأقل للفاتورة');
+      // The receipt's main category is the one with the largest share
+      const byCat = new Map<string, number>();
+      lines.forEach((l) => byCat.set(l.categoryId, (byCat.get(l.categoryId) ?? 0) + l.amount));
+      const mainCat = [...byCat.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      data = { amount: Math.round(linesTotal * 100) / 100, note: note.trim(), categoryId: mainCat, date, fixedId: editing?.fixedId ?? null, lines };
+    } else {
+      const n = parseFloat(amount);
+      if (!(n > 0)) return setError('اكتب المبلغ أولاً');
+      if (!catId) return setError('اختر تصنيف المصروف');
+      data = { amount: n, note: note.trim(), categoryId: catId, date, fixedId: editing?.fixedId ?? null, lines: [] };
+    }
     setBusy(true);
     try {
       if (editing) await updateExpense(editing.id, data);
@@ -86,9 +138,10 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
     }
   };
 
+  // ───── read-only view of someone else's expense ─────
   if (readOnly && editing) {
     const owner = memberOf(editing.userId);
-    const cat = categories.find((c) => c.id === editing.categoryId);
+    const cat = catOf(editing.categoryId);
     return (
       <Sheet visible={visible} onClose={onClose} title="تفاصيل المصروف">
         <View style={{ alignItems: 'center', paddingVertical: 12, gap: 10 }}>
@@ -97,7 +150,8 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
           <T w="medium" align="center">{editing.note || cat?.name}</T>
           <T size={TS.small} color={C.sub} align="center">{cat?.name}، {dayLabel(editing.date)}</T>
         </View>
-        <Row style={{ backgroundColor: C.paper, borderRadius: 14, padding: 12, gap: 10, marginTop: 8, marginBottom: 12 }}>
+        {editing.lines.length > 0 && <LinesList lines={editing.lines} />}
+        <Row style={{ backgroundColor: C.paper, borderRadius: 14, padding: 12, gap: 10, marginTop: 12, marginBottom: 12 }}>
           <Avatar name={owner?.displayName ?? '؟'} color={owner?.color ?? C.faint} size={32} />
           <T size={TS.small} color={C.sub} style={{ flex: 1 }}>
             سجّله {owner?.displayName ?? 'عضو سابق'}. صاحب المصروف بس بيقدر يعدّله أو يحذفه.
@@ -107,6 +161,212 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
     );
   }
 
+  // ───── item picker ─────
+  if (view === 'pick') {
+    const q = query.trim();
+    const visibleItems = items
+      .filter((i) => !i.archived && (!q || i.name.includes(q)))
+      .sort((a, b) => (usage.count.get(b.id) ?? 0) - (usage.count.get(a.id) ?? 0) || a.name.localeCompare(b.name, 'ar'));
+    const exact = items.some((i) => i.name === q);
+    const startLine = (it: Item) => {
+      const last = usage.last.get(it.id);
+      setDraft({ index: null, itemId: it.id, name: it.name, unit: it.unit, categoryId: it.categoryId, qty: '1', amount: last ? String(Math.round(last.price * 100) / 100) : '' });
+      setView('line');
+    };
+    const createItem = async () => {
+      if (!newItem?.categoryId) return setError('اختر تصنيف الصنف الجديد');
+      setBusy(true);
+      try {
+        const it = await saveItem({ name: q, categoryId: newItem.categoryId, unit: newItem.unit });
+        setNewItem(null);
+        setError('');
+        startLine(it);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+      setBusy(false);
+    };
+
+    return (
+      <Sheet
+        visible={visible}
+        onClose={onClose}
+        title="اختر صنف"
+        footer={
+          <View>
+            <ErrorText text={error} />
+            <Pressable onPress={() => (setView('main'), setNewItem(null), setError(''))} style={{ paddingVertical: 12 }}>
+              <T w="medium" color={C.oasis} align="center">رجوع للفاتورة</T>
+            </Pressable>
+          </View>
+        }
+      >
+        <Row style={{ backgroundColor: C.paper, borderRadius: 14, paddingHorizontal: 12, marginTop: 4 }}>
+          <Icon name="magnify" size={20} color={C.faint} />
+          <TextInput
+            value={query}
+            onChangeText={(t) => (setQuery(t), setNewItem(null))}
+            placeholder="ابحث أو اكتب اسم صنف جديد"
+            placeholderTextColor={C.faint}
+            autoFocus
+            style={{ ...inputStyle, flex: 1, minWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 8 }}
+          />
+        </Row>
+
+        {!!q && !exact && (
+          <View style={{ marginTop: 12, backgroundColor: C.oasis + '10', borderRadius: 16, padding: 14 }}>
+            {!newItem ? (
+              <Pressable onPress={() => setNewItem({ categoryId: visibleItems[0]?.categoryId ?? '', unit: 'حبة' })} style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+                <Icon name="plus-circle-outline" size={22} color={C.oasis} />
+                <T w="semibold" color={C.oasis}>أضف «{q}» كصنف جديد</T>
+              </Pressable>
+            ) : (
+              <>
+                <T w="semibold">«{q}» صنف جديد</T>
+                <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 12, marginBottom: 8 }}>بينباع بالـ</T>
+                <UnitPicker value={newItem.unit} onChange={(u) => setNewItem({ ...newItem, unit: u })} />
+                <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 12, marginBottom: 8 }}>التصنيف</T>
+                <CategoryPicker value={newItem.categoryId} onChange={(id) => setNewItem({ ...newItem, categoryId: id })} />
+                <View style={{ marginTop: 14 }}>
+                  <PrimaryButton label="أضف الصنف وكمّل" onPress={createItem} busy={busy} tone="oasis" />
+                </View>
+              </>
+            )}
+          </View>
+        )}
+
+        <View style={{ marginTop: 12, marginBottom: 8 }}>
+          {visibleItems.length === 0 && !q && (
+            <T color={C.sub} align="center" style={{ padding: 16 }}>
+              ما في أصناف لسه. اكتب اسم أول صنف بالبحث فوق، أو أضف الأصناف من الإعدادات ← التصنيفات.
+            </T>
+          )}
+          {visibleItems.slice(0, 60).map((it, i) => {
+            const cat = catOf(it.categoryId);
+            const last = usage.last.get(it.id);
+            return (
+              <Pressable
+                key={it.id}
+                onPress={() => startLine(it)}
+                style={({ pressed }) => ({
+                  flexDirection: 'row-reverse', alignItems: 'center', gap: 12, paddingVertical: 11,
+                  borderTopWidth: i ? 1 : 0, borderColor: C.line, backgroundColor: pressed ? C.paper : 'transparent',
+                })}
+              >
+                <CatTile icon={cat?.icon ?? 'tag'} color={cat?.color ?? C.faint} size={34} />
+                <View style={{ flex: 1 }}>
+                  <T w="medium">{it.name}</T>
+                  <T size={TS.tiny} color={C.sub}>{cat?.name}، بالـ{it.unit}</T>
+                </View>
+                {last && <T size={TS.tiny} color={C.faint}>آخر سعر {num(last.price)}</T>}
+              </Pressable>
+            );
+          })}
+        </View>
+      </Sheet>
+    );
+  }
+
+  // ───── line editor (quantity + total price) ─────
+  if (view === 'line' && draft) {
+    const qty = parseAmount(draft.qty) || 0;
+    const amt = parseAmount(draft.amount) || 0;
+    const step = ['كيلو', 'لتر'].includes(draft.unit) ? 0.5 : draft.unit === 'غرام' ? 100 : 1;
+    const cat = catOf(draft.categoryId);
+    const last = draft.itemId ? usage.last.get(draft.itemId) : undefined;
+    const commit = () => {
+      if (!(qty > 0)) return setError('اكتب الكمية');
+      if (!(amt >= 0) || !draft.amount.trim()) return setError('اكتب السعر الإجمالي لهذا الصنف');
+      const line: ExpenseLine = { itemId: draft.itemId, name: draft.name, unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt };
+      setLines((ls) => (draft.index === null ? [...ls, line] : ls.map((l, i) => (i === draft.index ? { ...l, ...line } : l))));
+      setDraft(null);
+      setQuery('');
+      setError('');
+      setView('main');
+    };
+    return (
+      <Sheet
+        visible={visible}
+        onClose={onClose}
+        title={draft.name}
+        footer={
+          <View>
+            <ErrorText text={error} />
+            <View style={{ height: 10 }} />
+            <PrimaryButton label={draft.index === null ? 'أضف للفاتورة' : 'حفظ السطر'} onPress={commit} />
+            <Pressable
+              onPress={() => {
+                if (draft.index !== null) setLines((ls) => ls.filter((_, i) => i !== draft.index));
+                setDraft(null);
+                setError('');
+                setView(draft.index === null ? 'pick' : 'main');
+              }}
+              style={{ paddingVertical: 12 }}
+            >
+              <T size={TS.small} w="medium" color={draft.index === null ? C.oasis : C.pom} align="center">
+                {draft.index === null ? 'اختر صنف ثاني' : 'احذف السطر من الفاتورة'}
+              </T>
+            </Pressable>
+          </View>
+        }
+      >
+        <Row style={{ gap: 10, marginTop: 2 }}>
+          <CatTile icon={cat?.icon ?? 'tag'} color={cat?.color ?? C.faint} size={36} />
+          <T size={TS.small} color={C.sub} style={{ flex: 1 }}>{cat?.name}، بالـ{draft.unit}</T>
+        </Row>
+
+        <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 18, marginBottom: 8 }}>الكمية</T>
+        <Row style={{ gap: 10 }}>
+          <Pressable
+            onPress={() => setDraft({ ...draft, qty: String(Math.round((qty + step) * 1000) / 1000) })}
+            accessibilityLabel="زيادة الكمية"
+            style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Icon name="plus" size={24} color="#fff" />
+          </Pressable>
+          <View style={{ flex: 1, flexDirection: 'row-reverse', alignItems: 'center', backgroundColor: C.paper, borderRadius: 16, paddingHorizontal: 14 }}>
+            <TextInput
+              value={draft.qty}
+              onChangeText={(t) => setDraft({ ...draft, qty: t })}
+              keyboardType="decimal-pad"
+              accessibilityLabel="الكمية"
+              style={{ flex: 1, minWidth: 0, fontFamily: F.bold, fontSize: 24, color: C.text, textAlign: 'center', paddingVertical: 10 }}
+            />
+            <T w="medium" color={C.sub}>{draft.unit}</T>
+          </View>
+          <Pressable
+            onPress={() => setDraft({ ...draft, qty: String(Math.max(Math.round((qty - step) * 1000) / 1000, step)) })}
+            accessibilityLabel="تقليل الكمية"
+            style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: C.paper, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Icon name="minus" size={24} color={C.text} />
+          </Pressable>
+        </Row>
+
+        <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 18, marginBottom: 8 }}>السعر الإجمالي لهذا الصنف (درهم)</T>
+        <TextInput
+          value={draft.amount}
+          onChangeText={(t) => setDraft({ ...draft, amount: t })}
+          keyboardType="decimal-pad"
+          placeholder="0"
+          placeholderTextColor={C.faint}
+          accessibilityLabel="السعر الإجمالي"
+          autoFocus={draft.index !== null || !draft.amount}
+          style={{ ...inputStyle, fontFamily: F.bold, fontSize: 28, textAlign: 'center', paddingVertical: 12 }}
+        />
+        <View style={{ marginTop: 10, marginBottom: 8, gap: 4 }}>
+          {qty > 0 && amt > 0 && (
+            <T size={TS.small} color={C.sub} align="center">سعر الـ{draft.unit}: {num(amt / qty)} درهم</T>
+          )}
+          {last && (
+            <T size={TS.tiny} color={C.faint} align="center">آخر مرة اشتريتوه بـ {num(last.price)} درهم للـ{draft.unit} ({dayLabel(last.date)})</T>
+          )}
+        </View>
+      </Sheet>
+    );
+  }
+
+  // ───── main form ─────
   const display = amount ? Number(amount.split('.')[0]).toLocaleString('en-US') + (amount.includes('.') ? '.' + amount.split('.')[1] : '') : '0';
 
   return (
@@ -116,8 +376,9 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
       title={editing ? 'تعديل المصروف' : 'مصروف جديد'}
       footer={
         <View>
-          {!!error && <T size={TS.small} color={C.pom} align="center" style={{ marginBottom: 8 }}>{error}</T>}
-          <PrimaryButton label={editing ? 'حفظ التعديل' : 'سجّل المصروف'} onPress={save} busy={busy} />
+          <ErrorText text={error} />
+          <View style={{ height: error ? 10 : 0 }} />
+          <PrimaryButton label={editing ? 'حفظ التعديل' : mode === 'receipt' ? 'سجّل الفاتورة' : 'سجّل المصروف'} onPress={save} busy={busy} />
           {editing && (
             <Pressable onPress={remove} disabled={busy} style={{ paddingVertical: 12 }}>
               <T size={TS.small} w="medium" color={C.pom} align="center">
@@ -128,67 +389,95 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
         </View>
       }
     >
-      {/* Amount */}
-      <View style={{ alignItems: 'center', paddingVertical: 8 }}>
-        <Row style={{ alignItems: 'baseline' }}>
-          <T w="bold" size={48} color={amount ? C.text : C.faint} align="center" style={{ letterSpacing: -1.5, lineHeight: 64 }}>
-            {display}
-          </T>
-          <T w="medium" size={18} color={C.sub} style={{ marginRight: 6 }}>درهم</T>
-        </Row>
-      </View>
-
-      {/* Keypad (digits keep phone order, left to right) */}
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
-        {KEYS.map((k) => (
-          <View key={k} style={{ width: '33.333%', padding: 4 }}>
-            <Pressable
-              onPress={() => press(k)}
-              style={({ pressed }) => ({
-                height: 50,
-                borderRadius: 14,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: pressed ? C.line : C.paper,
-              })}
-            >
-              {k === 'del' ? (
-                <Icon name="backspace-outline" size={22} color={C.text} />
-              ) : (
-                <T w="semibold" size={22} align="center">{k}</T>
-              )}
-            </Pressable>
-          </View>
-        ))}
-      </View>
-
-      {/* Category */}
-      <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 20, marginBottom: 10 }}>التصنيف</T>
-      <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', marginHorizontal: -4 }}>
-        {categories.map((c) => {
-          const on = c.id === catId;
-          return (
-            <View key={c.id} style={{ width: '25%', padding: 4 }}>
+      {/* Mode */}
+      {!editing?.fixedId && (
+        <View style={{ flexDirection: 'row-reverse', backgroundColor: C.paper, borderRadius: 14, padding: 4, marginTop: 4 }}>
+          {([['amount', 'مبلغ واحد', 'cash'], ['receipt', 'فاتورة بأصناف', 'receipt-text-outline']] as const).map(([k, label, icon]) => {
+            const on = mode === k;
+            return (
               <Pressable
-                onPress={() => (tap(), setCatId(c.id), setError(''))}
-                style={{
-                  alignItems: 'center',
-                  paddingVertical: 10,
-                  borderRadius: 16,
-                  borderWidth: 1.5,
-                  borderColor: on ? c.color : 'transparent',
-                  backgroundColor: on ? c.color + '12' : 'transparent',
-                }}
+                key={k}
+                onPress={() => (setMode(k), setError(''))}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: on }}
+                style={{ flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9, borderRadius: 11, backgroundColor: on ? C.surface : 'transparent' }}
               >
-                <CatTile icon={c.icon} color={c.color} size={40} />
-                <T size={TS.tiny} w={on ? 'semibold' : 'regular'} align="center" numberOfLines={1} style={{ marginTop: 6 }}>
-                  {c.name}
-                </T>
+                <Icon name={icon} size={18} color={on ? C.ink : C.sub} />
+                <T size={TS.small} w={on ? 'semibold' : 'regular'} color={on ? C.ink : C.sub}>{label}</T>
               </Pressable>
-            </View>
-          );
-        })}
-      </View>
+            );
+          })}
+        </View>
+      )}
+
+      {mode === 'amount' ? (
+        <>
+          <View style={{ alignItems: 'center', paddingVertical: 8 }}>
+            <Row style={{ alignItems: 'baseline' }}>
+              <T w="bold" size={48} color={amount ? C.text : C.faint} align="center" style={{ letterSpacing: -1.5, lineHeight: 64 }}>{display}</T>
+              <T w="medium" size={18} color={C.sub} style={{ marginRight: 6 }}>درهم</T>
+            </Row>
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
+            {KEYS.map((k) => (
+              <View key={k} style={{ width: '33.333%', padding: 4 }}>
+                <Pressable
+                  onPress={() => press(k)}
+                  style={({ pressed }) => ({ height: 50, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: pressed ? C.line : C.paper })}
+                >
+                  {k === 'del' ? <Icon name="backspace-outline" size={22} color={C.text} /> : <T w="semibold" size={22} align="center">{k}</T>}
+                </Pressable>
+              </View>
+            ))}
+          </View>
+
+          <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 20, marginBottom: 10 }}>التصنيف</T>
+          <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', marginHorizontal: -4 }}>
+            {categories.map((c) => {
+              const on = c.id === catId;
+              return (
+                <View key={c.id} style={{ width: '25%', padding: 4 }}>
+                  <Pressable
+                    onPress={() => (tap(), setCatId(c.id), setError(''))}
+                    style={{ alignItems: 'center', paddingVertical: 10, borderRadius: 16, borderWidth: 1.5, borderColor: on ? c.color : 'transparent', backgroundColor: on ? c.color + '12' : 'transparent' }}
+                  >
+                    <CatTile icon={c.icon} color={c.color} size={40} />
+                    <T size={TS.tiny} w={on ? 'semibold' : 'regular'} align="center" numberOfLines={1} style={{ marginTop: 6 }}>{c.name}</T>
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
+        </>
+      ) : (
+        <>
+          <View style={{ alignItems: 'center', paddingTop: 12, paddingBottom: 6 }}>
+            <T size={TS.small} color={C.sub} align="center">مجموع الفاتورة</T>
+            <Money value={linesTotal} size={40} w="bold" decimals />
+          </View>
+          {lines.length > 0 && (
+            <LinesList
+              lines={lines}
+              onPress={(i) => {
+                const l = lines[i];
+                setDraft({ index: i, itemId: l.itemId, name: l.name, unit: l.unit, categoryId: l.categoryId, qty: String(l.quantity), amount: String(l.amount) });
+                setView('line');
+              }}
+            />
+          )}
+          <Pressable
+            onPress={() => (setError(''), setView('pick'))}
+            style={({ pressed }) => ({
+              flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12,
+              paddingVertical: 14, borderRadius: 16, borderWidth: 1.5, borderStyle: 'dashed', borderColor: C.oasis,
+              backgroundColor: pressed ? C.oasis + '10' : 'transparent',
+            })}
+          >
+            <Icon name="plus" size={20} color={C.oasis} />
+            <T w="semibold" color={C.oasis}>{lines.length ? 'أضف صنف ثاني' : 'أضف أول صنف'}</T>
+          </Pressable>
+        </>
+      )}
 
       {/* Date */}
       <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 18, marginBottom: 10 }}>التاريخ</T>
@@ -197,11 +486,7 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
           const on = d === date;
           const s = shortDay(d);
           return (
-            <Pressable
-              key={d}
-              onPress={() => (tap(), setDate(d))}
-              style={{ width: 56, paddingVertical: 8, borderRadius: 14, alignItems: 'center', backgroundColor: on ? C.ink : C.paper }}
-            >
+            <Pressable key={d} onPress={() => (tap(), setDate(d))} style={{ width: 56, paddingVertical: 8, borderRadius: 14, alignItems: 'center', backgroundColor: on ? C.ink : C.paper }}>
               <T size={TS.tiny} color={on ? C.inkMuted : C.sub} align="center">{s.top}</T>
               <T w="bold" size={17} color={on ? '#fff' : C.text} align="center">{s.bottom}</T>
             </Pressable>
@@ -210,25 +495,38 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
       </HScroll>
 
       {/* Note */}
-      <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 18, marginBottom: 10 }}>ملاحظة</T>
+      <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 18, marginBottom: 10 }}>{mode === 'receipt' ? 'المحل' : 'ملاحظة'}</T>
       <TextInput
         value={note}
         onChangeText={setNote}
-        placeholder="مثلاً: بنزين، كارفور، قسط الباص"
+        placeholder={mode === 'receipt' ? 'مثلاً: كارفور، لولو، بقالة الحي' : 'مثلاً: بنزين، كارفور، قسط الباص'}
         placeholderTextColor={C.faint}
-        style={{
-          fontFamily: F.regular,
-          fontSize: TS.body,
-          textAlign: 'right',
-          writingDirection: 'rtl',
-          color: C.text,
-          backgroundColor: C.paper,
-          borderRadius: 14,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          marginBottom: 8,
-        }}
+        style={{ ...inputStyle, marginBottom: 8 }}
       />
     </Sheet>
+  );
+}
+
+function LinesList({ lines, onPress }: { lines: ExpenseLine[]; onPress?: (i: number) => void }) {
+  return (
+    <View style={{ backgroundColor: C.paper, borderRadius: 16, marginTop: 8 }}>
+      {lines.map((l, i) => (
+        <Pressable
+          key={`${l.itemId ?? l.name}-${i}`}
+          onPress={onPress ? () => onPress(i) : undefined}
+          disabled={!onPress}
+          style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderTopWidth: i ? 1 : 0, borderColor: C.line }}
+        >
+          <View style={{ flex: 1 }}>
+            <T w="medium">{l.name}</T>
+            <T size={TS.tiny} color={C.sub}>
+              {qtyLabel(l.quantity, l.unit)}{l.quantity > 0 ? `، ${num(l.amount / l.quantity)} للـ${l.unit}` : ''}
+            </T>
+          </View>
+          <Money value={l.amount} decimals />
+          {onPress && <Icon name="chevron-left" size={18} color={C.faint} />}
+        </Pressable>
+      ))}
+    </View>
   );
 }

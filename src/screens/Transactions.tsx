@@ -7,7 +7,7 @@ import { C, F, TS } from '../theme';
 import { Expense } from '../types';
 import { Chip, HScroll, Icon, Money, Row, T } from '../ui';
 import { ScopeSwitch } from '../components/ScopeSwitch';
-import { expenseOwner } from '../budgets';
+import { expenseOwner, touchesCategory } from '../budgets';
 import { dayLabel } from '../utils';
 import { PageHeader } from '../components/PageHeader';
 
@@ -21,7 +21,7 @@ export function Transactions() {
   const { sections, total, count } = useMemo(() => {
     const query = q.trim();
     const list = expenses
-      .filter((e) => e.date.startsWith(month) && (!filter || e.categoryId === filter) && (!who || expenseOwner(e, fixed) === who) && (!query || e.note.includes(query)))
+      .filter((e) => e.date.startsWith(month) && (!filter || touchesCategory(e, filter)) && (!who || expenseOwner(e, fixed) === who) && (!query || e.note.includes(query) || e.lines.some((l) => l.name.includes(query))))
       .sort((a, b) => (a.date === b.date ? b.createdAt - a.createdAt : a.date < b.date ? 1 : -1));
     const map = new Map<string, Expense[]>();
     list.forEach((e) => map.set(e.date, [...(map.get(e.date) ?? []), e]));
@@ -46,7 +46,7 @@ export function Transactions() {
           <TextInput
             value={q}
             onChangeText={setQ}
-            placeholder="ابحث بالملاحظة"
+            placeholder="ابحث بالملاحظة أو الصنف"
             placeholderTextColor={C.faint}
             style={{ flex: 1, fontFamily: F.regular, fontSize: TS.body, textAlign: 'right', writingDirection: 'rtl', color: C.text, paddingVertical: 11, marginRight: 8 }}
           />

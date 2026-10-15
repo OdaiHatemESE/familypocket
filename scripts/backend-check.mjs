@@ -104,6 +104,30 @@ ok(!!q.error, "another family cannot use this family's categories in a budget");
 const fxOwner = await a.from('fixed_expenses').insert({ name: 'QA school bus', amount: 300, due_day: 5, category_id: catId, owner_id: bId }).select().single();
 ok(!fxOwner.error && fxOwner.data.owner_id === bId, 'fixed expense assigned to a responsible member', fxOwner.error?.message);
 
+// 5c. Items and receipt lines
+const item = await b.from('items').insert({ category_id: catId, name: 'QA dish soap', unit: 'علبة' }).select().single();
+ok(!item.error, 'member adds an item with a unit', item.error?.message);
+const dupItem = await a.from('items').insert({ category_id: catId, name: 'QA dish soap', unit: 'علبة' });
+ok(dupItem.error?.code === '23505', 'same item name cannot repeat in a category', dupItem.error?.code);
+const receipt = await b.from('expenses').insert({ amount: 45, note: 'QA market', category_id: catId, spent_on: today }).select().single();
+const lines = await b.from('expense_items').insert([
+  { expense_id: receipt.data.id, item_id: item.data.id, category_id: catId, name: 'QA dish soap', unit: 'علبة', quantity: 2, amount: 30 },
+  { expense_id: receipt.data.id, item_id: null, category_id: catId, name: 'QA bread', unit: 'ربطة', quantity: 1.5, amount: 15 },
+]).select();
+ok(lines.data?.length === 2, 'member records a receipt with quantities', lines.error?.message);
+const withLines = await a.from('expenses').select('id, expense_items(quantity, amount)').eq('id', receipt.data.id).single();
+ok(withLines.data?.expense_items?.length === 2, 'family sees receipt lines', JSON.stringify(withLines.error));
+const foreignLine = await a.from('expense_items').insert({ expense_id: receipt.data.id, category_id: catId, name: 'x', unit: 'حبة', quantity: 1, amount: 1 });
+ok(!!foreignLine.error, "owner cannot add lines to member's receipt");
+const editLine = await a.from('expense_items').update({ amount: 1 }).eq('expense_id', receipt.data.id).select();
+ok((editLine.data?.length ?? 0) === 0, "owner cannot change member's receipt lines");
+const otherLines = await other.from('expense_items').select('id').eq('expense_id', receipt.data.id);
+ok((otherLines.data?.length ?? 0) === 0, "another family cannot read this family's receipt lines");
+const otherItems = await other.from('items').select('id').eq('category_id', catId);
+ok((otherItems.data?.length ?? 0) === 0, "another family cannot read this family's items");
+const replace = await b.from('expense_items').delete().eq('expense_id', receipt.data.id).select();
+ok(replace.data?.length === 2, 'member replaces their receipt lines when editing');
+
 // 6. Owner-only actions
 const bTry = await b.rpc('set_member_password', { p_user: (await a.auth.getUser()).data.user.id, p_password: 'hacked123' });
 ok(bTry.error?.message === 'OWNER_ONLY', 'member cannot reset passwords', bTry.error?.message);

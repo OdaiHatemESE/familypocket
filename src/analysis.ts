@@ -1,4 +1,4 @@
-import { expenseOwner } from './budgets';
+import { expenseOwner, spentInCategory } from './budgets';
 import { Category, Expense, FixedExpense, Member, MemberBudget } from './types';
 import { AR_DAYS, daysInMonth, fmt, monthKey, monthName, shiftMonth } from './utils';
 
@@ -113,8 +113,8 @@ export function analyzeMonth(
 
   const byCategory: CategoryStat[] = categories
     .map((c) => {
-      const spent = sum(inMonth.filter((e) => e.categoryId === c.id));
-      const prevSpent = sum(inPrev.filter((e) => e.categoryId === c.id));
+      const spent = spentInCategory(inMonth, c.id);
+      const prevSpent = spentInCategory(inPrev, c.id);
       const budget = catBudget(c.id);
       const pct = budget > 0 ? spent / budget : 0;
       // Unpaid obligations in this category are certain to land, so count them in the projection

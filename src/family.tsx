@@ -3,14 +3,15 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { loginEmail } from './lib/config';
 import { friendlyError, supabase } from './lib/supabase';
 import { resolveAll } from './budgets';
-import { BudgetRow, Category, CategoryBudgetRow, Expense, FixedExpense, Household, Member, MemberBudget } from './types';
+import { BudgetRow, Category, CategoryBudgetRow, Expense, ExpenseLine, FixedExpense, Household, Item, Member, MemberBudget } from './types';
 import { monthKey, shiftMonth } from './utils';
 
 type Status = 'loading' | 'signedOut' | 'ready';
 
 type CategoryInput = Omit<Category, 'id' | 'sort'> & { id?: string };
 type FixedInput = Omit<FixedExpense, 'id'> & { id?: string };
-type ExpenseInput = { amount: number; note: string; categoryId: string; date: string; fixedId?: string | null };
+type ExpenseInput = { amount: number; note: string; categoryId: string; date: string; fixedId?: string | null; lines?: ExpenseLine[] };
+type ItemInput = { id?: string; categoryId: string; name: string; unit: string };
 
 type Ctx = {
   status: Status;
@@ -20,6 +21,10 @@ type Ctx = {
   categories: Category[];
   expenses: Expense[];
   fixed: FixedExpense[];
+  items: Item[];
+  /** Creates the item (or returns the existing one with the same name in that category) */
+  saveItem: (i: ItemInput) => Promise<Item>;
+  deleteItem: (id: string) => Promise<void>;
   budgetRows: BudgetRow[];
   categoryBudgetRows: CategoryBudgetRow[];
   /** Each active member's budget as it applies to `month` */
@@ -56,10 +61,15 @@ const toMember = (r: any): Member => ({ id: r.id, username: r.username, displayN
 const toCategory = (r: any): Category => ({
   id: r.id, name: r.name, icon: r.icon, color: r.color, monthlyBudget: Number(r.monthly_budget) || 0, sort: r.sort ?? 0,
 });
+const toLine = (r: any): ExpenseLine => ({
+  id: r.id, itemId: r.item_id, categoryId: r.category_id, name: r.name, unit: r.unit, quantity: Number(r.quantity) || 0, amount: Number(r.amount) || 0,
+});
 const toExpense = (r: any): Expense => ({
   id: r.id, userId: r.user_id, categoryId: r.category_id, fixedId: r.fixed_id, amount: Number(r.amount) || 0,
   note: r.note ?? '', date: r.spent_on, createdAt: Date.parse(r.created_at) || 0,
+  lines: (r.expense_items ?? []).map(toLine).sort((a: ExpenseLine, b: ExpenseLine) => b.amount - a.amount),
 });
+const toItem = (r: any): Item => ({ id: r.id, categoryId: r.category_id, name: r.name, unit: r.unit, archived: !!r.archived });
 const toFixed = (r: any): FixedExpense => ({
   id: r.id, name: r.name, categoryId: r.category_id, amount: Number(r.amount) || 0, dueDay: r.due_day, active: r.active, ownerId: r.owner_id ?? null,
 });
@@ -84,6 +94,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [fixed, setFixed] = useState<FixedExpense[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
   const [budgetRows, setBudgetRows] = useState<BudgetRow[]>([]);
   const [categoryBudgetRows, setCategoryBudgetRows] = useState<CategoryBudgetRow[]>([]);
   const householdId = useRef<string | null>(null);
@@ -105,9 +116,13 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       expenses: async () => {
         const from = shiftMonth(monthKey(new Date()), -(HISTORY_MONTHS - 1)) + '-01';
         const { data } = check(
-          await supabase.from('expenses').select('*').gte('spent_on', from).order('spent_on', { ascending: false }).order('created_at', { ascending: false }).limit(5000),
+          await supabase.from('expenses').select('*, expense_items(*)').gte('spent_on', from).order('spent_on', { ascending: false }).order('created_at', { ascending: false }).limit(5000),
         );
         setExpenses((data ?? []).map(toExpense));
+      },
+      items: async () => {
+        const { data } = check(await supabase.from('items').select('*').order('name'));
+        setItems((data ?? []).map(toItem));
       },
       budgets: async () => {
         const [a, b] = await Promise.all([
@@ -128,7 +143,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
 
   const clear = useCallback(() => {
     householdId.current = null;
-    setUserId(null); setMe(null); setHousehold(null); setProfiles([]); setCategories([]); setExpenses([]); setFixed([]); setBudgetRows([]); setCategoryBudgetRows([]);
+    setUserId(null); setMe(null); setHousehold(null); setProfiles([]); setCategories([]); setExpenses([]); setFixed([]); setItems([]); setBudgetRows([]); setCategoryBudgetRows([]);
     setStatus('signedOut');
   }, []);
 
@@ -143,7 +158,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     setMe(toMember(profile));
     householdId.current = profile.household_id;
     try {
-      await Promise.all([loaders.household(), loaders.members(), loaders.categories(), loaders.fixed(), loaders.expenses(), loaders.budgets()]);
+      await Promise.all([loaders.household(), loaders.members(), loaders.categories(), loaders.fixed(), loaders.expenses(), loaders.budgets(), loaders.items()]);
     } finally {
       setStatus('ready');
     }
@@ -181,6 +196,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     watch('fixed_expenses', 'fixed');
     watch('profiles', 'members');
     watch('member_budgets', 'budgets');
+    watch('items', 'items');
+    watch('expense_items', 'expenses');
     watch('member_category_budgets', 'budgets');
     channel.subscribe();
     return () => {
@@ -192,12 +209,32 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<Ctx>(() => {
     const memberOf = (id: string | null) => profiles.find((m) => m.id === id);
 
+    const lineRow = (expenseId: string, l: ExpenseLine) => ({
+      expense_id: expenseId, item_id: l.itemId, category_id: l.categoryId, name: l.name, unit: l.unit, quantity: l.quantity, amount: l.amount,
+    });
     const expenseRow = (e: ExpenseInput) => ({
       amount: e.amount, note: e.note, category_id: e.categoryId, spent_on: e.date, fixed_id: e.fixedId ?? null,
     });
 
     return {
-      status, me, household, members, categories, expenses, fixed, memberOf,
+      status, me, household, members, categories, expenses, fixed, memberOf, items,
+      saveItem: async (i) => {
+        const name = i.name.trim();
+        const existing = items.find((x) => x.categoryId === i.categoryId && x.name === name && x.id !== i.id);
+        if (existing && !i.id) return existing;
+        if (existing) throw new Error('في صنف بنفس الاسم بهذا التصنيف');
+        const row = { category_id: i.categoryId, name, unit: i.unit };
+        const { data } = i.id
+          ? check(await supabase.from('items').update(row).eq('id', i.id).select().single())
+          : check(await supabase.from('items').insert(row).select().single());
+        const saved = toItem(data);
+        setItems((xs) => [...xs.filter((x) => x.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name, 'ar')));
+        return saved;
+      },
+      deleteItem: async (id) => {
+        check(await supabase.from('items').delete().eq('id', id));
+        setItems((xs) => xs.filter((x) => x.id !== id));
+      },
       budgetRows, categoryBudgetRows,
       budgetsFor: (month) => resolveAll(members, month, budgetRows, categoryBudgetRows),
       saveBudget: async (userId, month, total, cats) => {
@@ -258,11 +295,24 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
 
       addExpense: async (e) => {
         const { data } = check(await supabase.from('expenses').insert(expenseRow(e)).select().single());
-        setExpenses((xs) => [toExpense(data), ...xs.filter((x) => x.id !== data.id)]);
+        if (e.lines?.length) {
+          const res = await supabase.from('expense_items').insert(e.lines.map((l) => lineRow(data.id, l)));
+          if (res.error) {
+            // Don't leave a receipt without its lines
+            await supabase.from('expenses').delete().eq('id', data.id);
+            throw new Error(friendlyError(res.error));
+          }
+        }
+        const { data: full } = check(await supabase.from('expenses').select('*, expense_items(*)').eq('id', data.id).single());
+        setExpenses((xs) => [toExpense(full), ...xs.filter((x) => x.id !== full.id)]);
       },
       updateExpense: async (id, e) => {
-        const { data } = check(await supabase.from('expenses').update(expenseRow(e)).eq('id', id).select().single());
-        setExpenses((xs) => xs.map((x) => (x.id === id ? toExpense(data) : x)));
+        check(await supabase.from('expenses').update(expenseRow(e)).eq('id', id));
+        // Replace the receipt lines with the edited set
+        check(await supabase.from('expense_items').delete().eq('expense_id', id));
+        if (e.lines?.length) check(await supabase.from('expense_items').insert(e.lines.map((l) => lineRow(id, l))));
+        const { data: full } = check(await supabase.from('expenses').select('*, expense_items(*)').eq('id', id).single());
+        setExpenses((xs) => xs.map((x) => (x.id === id ? toExpense(full) : x)));
       },
       deleteExpense: async (id) => {
         check(await supabase.from('expenses').delete().eq('id', id));
@@ -277,7 +327,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       },
       deleteCategory: async (id) => {
         check(await supabase.from('categories').delete().eq('id', id));
-        await Promise.all([loaders.categories(), loaders.expenses(), loaders.fixed()]);
+        await Promise.all([loaders.categories(), loaders.expenses(), loaders.fixed(), loaders.items()]);
       },
 
       saveFixed: async (f) => {
@@ -294,10 +344,10 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         const { data } = check(
           await supabase.from('expenses').insert({ amount: f.amount, note: f.name, category_id: f.categoryId, spent_on: date, fixed_id: f.id }).select().single(),
         );
-        setExpenses((xs) => [toExpense(data), ...xs]);
+        setExpenses((xs) => [toExpense({ ...data, expense_items: [] }), ...xs]);
       },
     };
-  }, [status, me, household, members, profiles, categories, expenses, fixed, budgetRows, categoryBudgetRows, userId, loaders, loadAll]);
+  }, [status, me, household, members, profiles, categories, expenses, fixed, items, budgetRows, categoryBudgetRows, userId, loaders, loadAll]);
 
   return <FamilyContext.Provider value={value}>{children}</FamilyContext.Provider>;
 }

@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import React, { useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { CategorySheet } from '../../components/CategorySheet';
@@ -8,23 +9,24 @@ import { Category } from '../../types';
 import { Card, CatTile, Icon, T } from '../../ui';
 
 export default function CategoriesScreen() {
-  const { categories, expenses } = useFamily();
+  const { categories, expenses, items } = useFamily();
   const [editing, setEditing] = useState<Category | null>(null);
   const [open, setOpen] = useState(false);
   const countOf = (id: string) => expenses.filter((e) => e.categoryId === id).length;
+  const itemsOf = (id: string) => items.filter((i) => i.categoryId === id);
 
   return (
     <View style={{ flex: 1 }}>
       <PageHeader title="التصنيفات" back />
       <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
         <T size={TS.small} color={C.sub} style={{ marginTop: 4, marginBottom: 12 }}>
-          التصنيفات مشتركة لكل العائلة. حصة كل تصنيف بتتحدد لكل فرد من «البادجت الشهري».
+          التصنيفات وأصنافها مشتركة لكل العائلة. افتح أي تصنيف لتضيف تحته أصناف مثل دواء جلي أو دجاج مع وحدتها.
         </T>
         <Card>
           {categories.map((c, i) => (
             <Pressable
               key={c.id}
-              onPress={() => (setEditing(c), setOpen(true))}
+              onPress={() => router.push({ pathname: '/settings/category/[id]', params: { id: c.id } })}
               style={({ pressed }) => ({
                 flexDirection: 'row-reverse', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14,
                 borderTopWidth: i ? 1 : 0, borderColor: C.line, backgroundColor: pressed ? C.paper : 'transparent',
@@ -33,7 +35,9 @@ export default function CategoriesScreen() {
               <CatTile icon={c.icon} color={c.color} size={40} />
               <View style={{ flex: 1 }}>
                 <T w="semibold">{c.name}</T>
-                <T size={TS.small} color={C.sub}>{countOf(c.id)} مصروف</T>
+                <T size={TS.small} color={C.sub} numberOfLines={1}>
+                  {itemsOf(c.id).length ? itemsOf(c.id).map((i) => i.name).join('، ') : `${countOf(c.id)} مصروف، بدون أصناف`}
+                </T>
               </View>
               <Icon name="chevron-left" size={22} color={C.faint} />
             </Pressable>
