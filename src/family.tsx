@@ -46,7 +46,7 @@ type Ctx = {
 const FamilyContext = createContext<Ctx | null>(null);
 
 // ───── row mappers ─────
-const toMember = (r: any): Member => ({ id: r.id, username: r.username, displayName: r.display_name, color: r.color, role: r.role });
+const toMember = (r: any): Member => ({ id: r.id, username: r.username, displayName: r.display_name, color: r.color, role: r.role, active: r.active !== false });
 const toCategory = (r: any): Category => ({
   id: r.id, name: r.name, icon: r.icon, color: r.color, monthlyBudget: Number(r.monthly_budget) || 0, sort: r.sort ?? 0,
 });
@@ -71,7 +71,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<Status>('loading');
   const [me, setMe] = useState<Member | null>(null);
   const [household, setHousehold] = useState<Household | null>(null);
-  const [members, setMembers] = useState<Member[]>([]);
+  const [profiles, setProfiles] = useState<Member[]>([]); // includes former members, for names on old expenses
+  const members = useMemo(() => profiles.filter((m) => m.active), [profiles]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [fixed, setFixed] = useState<FixedExpense[]>([]);
@@ -81,7 +82,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     () => ({
       members: async () => {
         const { data } = check(await supabase.from('profiles').select('*').order('created_at'));
-        setMembers((data ?? []).map(toMember));
+        setProfiles((data ?? []).map(toMember));
       },
       categories: async () => {
         const { data } = check(await supabase.from('categories').select('*').order('sort').order('created_at'));
@@ -108,7 +109,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
 
   const clear = useCallback(() => {
     householdId.current = null;
-    setUserId(null); setMe(null); setHousehold(null); setMembers([]); setCategories([]); setExpenses([]); setFixed([]);
+    setUserId(null); setMe(null); setHousehold(null); setProfiles([]); setCategories([]); setExpenses([]); setFixed([]);
     setStatus('signedOut');
   }, []);
 
@@ -168,7 +169,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   }, [status, loaders]);
 
   const value = useMemo<Ctx>(() => {
-    const memberOf = (id: string | null) => members.find((m) => m.id === id);
+    const memberOf = (id: string | null) => profiles.find((m) => m.id === id);
 
     const expenseRow = (e: ExpenseInput) => ({
       amount: e.amount, note: e.note, category_id: e.categoryId, spent_on: e.date, fixed_id: e.fixedId ?? null,
@@ -266,7 +267,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         setExpenses((xs) => [toExpense(data), ...xs]);
       },
     };
-  }, [status, me, household, members, categories, expenses, fixed, userId, loaders, loadAll]);
+  }, [status, me, household, members, profiles, categories, expenses, fixed, userId, loaders, loadAll]);
 
   return <FamilyContext.Provider value={value}>{children}</FamilyContext.Provider>;
 }

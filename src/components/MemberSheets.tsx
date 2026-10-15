@@ -160,7 +160,7 @@ function MemberActions({ member, onClose }: { member: Member; onClose: () => voi
 
       <Pressable onPress={remove} disabled={busy} style={{ paddingVertical: 18 }}>
         <T size={TS.small} w="medium" color={C.pom} align="center">
-          {confirmRemove ? `اضغط مرة ثانية لحذف ${member.displayName}. مصاريفه بتضل بالسجل باسم "عضو سابق"` : 'حذف من العائلة'}
+          {confirmRemove ? `اضغط مرة ثانية لحذف ${member.displayName}. ما بيقدر يدخل بعدها، ومصاريفه بتضل بالسجل باسمه` : 'حذف من العائلة'}
         </T>
       </Pressable>
     </Sheet>

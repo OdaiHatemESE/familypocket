@@ -19,12 +19,13 @@ create table public.profiles (
   display_name  text not null check (char_length(display_name) between 1 and 40),
   color         text not null default '#2E5EAA',
   role          text not null default 'member' check (role in ('owner', 'member')),
+  active        boolean not null default true, -- false once removed from the family
   created_at    timestamptz not null default now()
 );
 
 create or replace function public.my_household()
 returns uuid language sql stable security definer set search_path = ''
-as $$ select household_id from public.profiles where id = auth.uid() $$;
+as $$ select household_id from public.profiles where id = auth.uid() and active $$;
 
 create table public.categories (
   id              uuid primary key default gen_random_uuid(),
@@ -64,6 +65,9 @@ create index expenses_household_date on public.expenses (household_id, spent_on 
 create index categories_household on public.categories (household_id);
 create index fixed_household on public.fixed_expenses (household_id);
 create index profiles_household on public.profiles (household_id);
+create index expenses_user on public.expenses (user_id);
+create index expenses_category on public.expenses (category_id);
+create index fixed_category on public.fixed_expenses (category_id);
 -- A fixed obligation can only be marked paid once per month
 create unique index expenses_fixed_once_per_month
   on public.expenses (fixed_id, (extract(year from spent_on) * 100 + extract(month from spent_on)))
@@ -76,33 +80,33 @@ alter table public.categories     enable row level security;
 alter table public.fixed_expenses enable row level security;
 alter table public.expenses       enable row level security;
 
-create policy "household: read own"   on public.households for select to authenticated using (id = public.my_household());
-create policy "household: rename own" on public.households for update to authenticated using (id = public.my_household()) with check (id = public.my_household());
+create policy "household: read own"   on public.households for select to authenticated using (id = (select public.my_household()));
+create policy "household: rename own" on public.households for update to authenticated using (id = (select public.my_household())) with check (id = (select public.my_household()));
 
-create policy "profiles: read family" on public.profiles for select to authenticated using (household_id = public.my_household());
-create policy "profiles: edit self"   on public.profiles for update to authenticated using (id = auth.uid())
-  with check (id = auth.uid() and household_id = public.my_household());
+create policy "profiles: read family" on public.profiles for select to authenticated using (household_id = (select public.my_household()));
+create policy "profiles: edit self"   on public.profiles for update to authenticated using (id = (select auth.uid()))
+  with check (id = (select auth.uid()) and household_id = (select public.my_household()));
 
 -- Every family member can manage categories, budgets and fixed obligations
 create policy "categories: family" on public.categories for all to authenticated
-  using (household_id = public.my_household()) with check (household_id = public.my_household());
+  using (household_id = (select public.my_household())) with check (household_id = (select public.my_household()));
 create policy "fixed: family" on public.fixed_expenses for all to authenticated
-  using (household_id = public.my_household()) with check (household_id = public.my_household());
+  using (household_id = (select public.my_household())) with check (household_id = (select public.my_household()));
 
 -- Everyone sees the family's expenses; each person adds, edits and deletes their own
-create policy "expenses: read family" on public.expenses for select to authenticated using (household_id = public.my_household());
+create policy "expenses: read family" on public.expenses for select to authenticated using (household_id = (select public.my_household()));
 create policy "expenses: add own" on public.expenses for insert to authenticated
-  with check (household_id = public.my_household() and user_id = auth.uid());
+  with check (household_id = (select public.my_household()) and user_id = (select auth.uid()));
 create policy "expenses: edit own" on public.expenses for update to authenticated
-  using (household_id = public.my_household() and user_id = auth.uid())
-  with check (household_id = public.my_household() and user_id = auth.uid());
+  using (household_id = (select public.my_household()) and user_id = (select auth.uid()))
+  with check (household_id = (select public.my_household()) and user_id = (select auth.uid()));
 create policy "expenses: delete own" on public.expenses for delete to authenticated
-  using (household_id = public.my_household() and user_id = auth.uid());
+  using (household_id = (select public.my_household()) and user_id = (select auth.uid()));
 
 -- ───────────── Accounts (username + password) ─────────────
 -- Usernames map to an internal address; nothing is ever emailed.
 create or replace function private.login_email(p_username text)
-returns text language sql immutable as $$ select lower(trim(p_username)) || '@familypocket.local' $$;
+returns text language sql immutable set search_path = '' as $$ select lower(trim(p_username)) || '@familypocket.local' $$;
 
 create or replace function private.create_auth_user(p_username text, p_password text, p_display_name text)
 returns uuid language plpgsql security definer set search_path = ''
@@ -139,7 +143,7 @@ begin
   return v_id;
 end $$;
 
-revoke all on function private.create_auth_user(text, text, text) from public, anon, authenticated;
+revoke execute on function private.create_auth_user(text, text, text) from public, anon, authenticated;
 
 -- Create a new family with its owner account and starter categories (called before sign-in)
 create or replace function public.register_family(p_username text, p_password text, p_display_name text, p_family_name text)
@@ -189,30 +193,31 @@ begin
   update auth.users set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf')), updated_at = now() where id = p_user;
 end $$;
 
--- Owner removes a member; their past expenses stay in the family's history
+-- Owner removes a member: sign-in is blocked and they leave the family; their past expenses keep their name
 create or replace function public.remove_family_member(p_user uuid)
 returns void language plpgsql security definer set search_path = ''
 as $$
 begin
-  if not exists (select 1 from public.profiles where id = auth.uid() and role = 'owner') then
+  if not exists (select 1 from public.profiles where id = auth.uid() and role = 'owner' and active) then
     raise exception 'OWNER_ONLY' using hint = 'صاحب الحساب بس بيقدر يحذف أفراد';
   end if;
   if p_user = auth.uid() then raise exception 'CANNOT_REMOVE_SELF' using hint = 'ما بتقدر تحذف حسابك'; end if;
-  if not exists (select 1 from public.profiles where id = p_user and household_id = public.my_household()) then
+  if not exists (select 1 from public.profiles where id = p_user and household_id = public.my_household() and active) then
     raise exception 'NOT_IN_FAMILY';
   end if;
-  delete from auth.users where id = p_user;
+  update public.profiles set active = false where id = p_user;
+  update auth.users set banned_until = 'infinity' where id = p_user;
 end $$;
 
-revoke all on function public.register_family(text, text, text, text) from public;
+revoke execute on function public.register_family(text, text, text, text) from public;
 grant execute on function public.register_family(text, text, text, text) to anon, authenticated;
-revoke all on function public.add_family_member(text, text, text, text) from public, anon;
+revoke execute on function public.add_family_member(text, text, text, text) from public, anon;
 grant execute on function public.add_family_member(text, text, text, text) to authenticated;
-revoke all on function public.set_member_password(uuid, text) from public, anon;
+revoke execute on function public.set_member_password(uuid, text) from public, anon;
 grant execute on function public.set_member_password(uuid, text) to authenticated;
-revoke all on function public.remove_family_member(uuid) from public, anon;
+revoke execute on function public.remove_family_member(uuid) from public, anon;
 grant execute on function public.remove_family_member(uuid) to authenticated;
-revoke all on function public.my_household() from public, anon;
+revoke execute on function public.my_household() from public, anon;
 grant execute on function public.my_household() to authenticated;
 
 -- ───────────── Realtime: family members see each other's changes instantly ─────────────

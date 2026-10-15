@@ -1,0 +1,19 @@
+name: Backend check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feature/**']
+    paths: ['scripts/backend-check.mjs', 'supabase/**']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/backend-check.mjs

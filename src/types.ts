@@ -6,6 +6,7 @@ export type Member = {
   displayName: string;
   color: string;
   role: Role;
+  active: boolean;
 };
 
 export type Household = { id: string; name: string; currency: string };

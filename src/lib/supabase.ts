@@ -22,6 +22,7 @@ if (Platform.OS !== 'web') {
 
 const MESSAGES: Record<string, string> = {
   'Invalid login credentials': 'اسم المستخدم أو كلمة المرور غير صحيحة',
+  'User is banned': 'هذا الحساب موقوف. تواصل مع صاحب حساب العائلة',
   USERNAME_INVALID: 'اسم المستخدم من 3 إلى 24 حرف إنجليزي صغير أو رقم',
   USERNAME_TAKEN: 'اسم المستخدم مستخدم، جرّب اسم ثاني',
   PASSWORD_SHORT: 'كلمة المرور لازم تكون 6 خانات أو أكثر',
