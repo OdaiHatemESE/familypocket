@@ -12,6 +12,13 @@ const tag = Date.now().toString(36);
 const A = `qa_a_${tag}`, B = `qa_b_${tag}`, Cc = `qa_c_${tag}`;
 let failed = 0;
 const CI = !!process.env.GITHUB_ACTIONS;
+for (const ev of ['uncaughtException', 'unhandledRejection']) {
+  process.on(ev, (e) => {
+    const msg = `${ev}: ${e?.stack ?? e}`.replace(/\n/g, ' | ');
+    console.log(CI ? `::error::${msg}` : msg);
+    process.exit(1);
+  });
+}
 // In CI, failures and notes become annotations, which are readable from the API without log access
 const note = (msg) => console.log(CI ? `::notice::${msg}` : msg);
 const ok = (cond, name, extra = '') => {
