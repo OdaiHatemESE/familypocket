@@ -5,7 +5,7 @@ import { qtyLabel } from '../budgets';
 import { useFamily } from '../family';
 import { pickReceiptPhoto } from '../lib/receiptPhoto';
 import { C, F, TS } from '../theme';
-import { Expense, ExpenseLine, Item, UNITS } from '../types';
+import { Expense, ExpenseLine, Item, ReceiptPrefill, UNITS } from '../types';
 import { Avatar, CatTile, ErrorText, HScroll, Icon, Money, PrimaryButton, Row, T } from '../ui';
 import { dayLabel, num, parseAmount, shortDay, toKey } from '../utils';
 import { CategoryPicker, UnitPicker } from './ItemSheet';
@@ -36,27 +36,27 @@ const inputStyle = {
   paddingVertical: 12,
 };
 
-type Props = { visible: boolean; onClose: () => void; editing?: Expense | null };
+type Props = { visible: boolean; onClose: () => void; editing?: Expense | null; prefill?: ReceiptPrefill | null };
 
 /** Mounted fresh each time it opens, so the form always starts from `editing` */
 export function ExpenseSheet(props: Props) {
   if (!props.visible) return null;
-  return <ExpenseForm key={props.editing?.id ?? 'new'} {...props} />;
+  return <ExpenseForm key={props.editing?.id ?? (props.prefill ? 'draft' : 'new')} {...props} />;
 }
 
 type View_ = 'main' | 'pick' | 'line';
 type Draft = { index: number | null; itemId: string | null; name: string; unit: string; categoryId: string; qty: string; amount: string; raw?: string };
 
-function ExpenseForm({ visible, onClose, editing }: Props) {
+function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
   const { categories, items, expenses, me, memberOf, addExpense, updateExpense, deleteExpense, saveItem, scanReceipt, learnAliases } = useFamily();
   const readOnly = !!editing && editing.userId !== me?.id;
-  const [mode, setMode] = useState<'amount' | 'receipt'>(editing?.lines.length ? 'receipt' : 'amount');
+  const [mode, setMode] = useState<'amount' | 'receipt'>(editing?.lines.length || prefill ? 'receipt' : 'amount');
   const [view, setView] = useState<View_>('main');
   const [amount, setAmount] = useState(editing && !editing.lines.length ? String(editing.amount) : '');
-  const [lines, setLines] = useState<ExpenseLine[]>(editing?.lines ?? []);
-  const [note, setNote] = useState(editing?.note ?? '');
+  const [lines, setLines] = useState<ExpenseLine[]>(editing?.lines ?? prefill?.lines ?? []);
+  const [note, setNote] = useState(editing?.note ?? prefill?.note ?? '');
   const [catId, setCatId] = useState(editing?.categoryId ?? '');
-  const [date, setDate] = useState(editing?.date ?? toKey(new Date()));
+  const [date, setDate] = useState(editing?.date ?? prefill?.date ?? toKey(new Date()));
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -67,7 +67,7 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
   // receipt photo reading
   const [scanning, setScanning] = useState(false);
-  const [scanNotes, setScanNotes] = useState<string[]>([]);
+  const [scanNotes, setScanNotes] = useState<string[]>(prefill?.warnings ?? []);
   const [relinking, setRelinking] = useState<Draft | null>(null); // a line waiting for a different item
 
   const days = lastDays(14);
@@ -111,6 +111,8 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
       if (!lines.length) return setError('أضف صنف واحد على الأقل للفاتورة');
       const noCat = lines.findIndex((l) => !l.categoryId);
       if (noCat >= 0) return setError(`اختر تصنيف «${lines[noCat].name}» قبل الحفظ`);
+      const noPrice = lines.findIndex((l) => l.needsPrice);
+      if (noPrice >= 0) return setError(`اكتب سعر «${lines[noPrice].name}» قبل الحفظ`);
     } else {
       const n = parseFloat(amount);
       if (!(n > 0)) return setError('اكتب المبلغ أولاً');
@@ -355,7 +357,7 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
       if (!draft.categoryId) return setError('اختر تصنيف الصنف');
       const line: ExpenseLine = {
         itemId: draft.itemId, name: draft.name.trim(), unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt,
-        raw: draft.raw, uncertain: false,
+        raw: draft.raw, uncertain: false, needsPrice: false,
       };
       setLines((ls) => (draft.index === null ? [...ls, line] : ls.map((l, i) => (i === draft.index ? { ...l, ...line } : l))));
       setDraft(null);
@@ -399,7 +401,7 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
           <Row style={{ gap: 10, marginTop: 10 }}>
             <CatTile icon={cat?.icon ?? 'tag'} color={cat?.color ?? C.faint} size={36} />
             <T size={TS.small} color={C.sub} style={{ flex: 1 }}>{cat?.name}، بالـ{draft.unit}</T>
-            {!!draft.raw && (
+            {draft.index !== null && (
               <Pressable onPress={() => (setRelinking(draft), setQuery(''), setError(''), setView('pick'))} hitSlop={8}>
                 <T size={TS.small} w="medium" color={C.oasis}>غيّر الصنف</T>
               </Pressable>
@@ -671,7 +673,7 @@ function LinesList({ lines, onPress }: { lines: ExpenseLine[]; onPress?: (i: num
           disabled={!onPress}
           style={{
             flexDirection: 'row-reverse', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderTopWidth: i ? 1 : 0, borderColor: C.line,
-            borderRightWidth: onPress && (l.uncertain || !l.categoryId) ? 3 : 0, borderRightColor: C.saffron,
+            borderRightWidth: onPress && (l.uncertain || !l.categoryId || l.needsPrice) ? 3 : 0, borderRightColor: C.saffron,
           }}
         >
           <View style={{ flex: 1 }}>
@@ -683,10 +685,12 @@ function LinesList({ lines, onPress }: { lines: ExpenseLine[]; onPress?: (i: num
                 </View>
               )}
             </View>
-            <T size={TS.tiny} color={onPress && (l.uncertain || !l.categoryId) ? C.saffron : C.sub}>
+            <T size={TS.tiny} color={onPress && (l.uncertain || !l.categoryId || l.needsPrice) ? C.saffron : C.sub}>
               {onPress && !l.categoryId
                 ? 'اختر التصنيف'
-                : onPress && l.uncertain
+                : onPress && l.needsPrice
+                  ? `${qtyLabel(l.quantity, l.unit)}، اكتب السعر`
+                  : onPress && l.uncertain
                   ? 'راجع هذا السطر'
                   : `${qtyLabel(l.quantity, l.unit)}${l.quantity > 0 ? `، ${num(l.amount / l.quantity)} للـ${l.unit}` : ''}`}
             </T>

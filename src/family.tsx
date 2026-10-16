@@ -25,6 +25,8 @@ export type ScanLine = {
   isNew: boolean;
   uncertain: boolean;
   learned: boolean;
+  /** Said in words without a price: amount is 0 until filled in */
+  needsPrice?: boolean;
 };
 export type ScanDraft = {
   store: string | null;
@@ -36,6 +38,27 @@ export type ScanDraft = {
   provider: string;
   model: string;
 };
+
+export type ChatTurn = { role: 'user' | 'assistant'; text: string };
+export type AssistantReply =
+  | { kind: 'answer'; answer: string }
+  | { kind: 'receipt'; answer: string; draft: Omit<ScanDraft, 'provider' | 'model'> };
+
+/** Calls one of our server functions; their errors carry a ready Arabic sentence in `message` */
+async function invokeFn<T>(name: string, body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await supabase.functions.invoke(name, { body });
+  if (error) {
+    let message = '';
+    try {
+      const ctx = (error as { context?: Response }).context;
+      message = ctx ? (await ctx.json())?.message ?? '' : '';
+    } catch {
+      /* response was not JSON */
+    }
+    throw new Error(message || friendlyError(error));
+  }
+  return data as T;
+}
 
 type Ctx = {
   status: Status;
@@ -51,6 +74,8 @@ type Ctx = {
   deleteItem: (id: string) => Promise<void>;
   /** Sends a receipt photo to the server and returns a draft to review */
   scanReceipt: (photo: { base64: string; mimeType: string }) => Promise<ScanDraft>;
+  /** Sends a chat message: answers a question, or turns a purchase described in words into a receipt draft */
+  askAssistant: (message: string, history: ChatTurn[]) => Promise<AssistantReply>;
   /** Remembers what a shop prints for each item, so the next receipt matches by itself */
   learnAliases: (pairs: { raw: string; itemId: string }[]) => Promise<void>;
   budgetRows: BudgetRow[];
@@ -259,21 +284,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         setItems((xs) => [...xs.filter((x) => x.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name, 'ar')));
         return saved;
       },
-      scanReceipt: async (photo) => {
-        const { data, error } = await supabase.functions.invoke('scan-receipt', { body: { image: photo.base64, mimeType: photo.mimeType } });
-        if (error) {
-          // The function answers with { error, message } in Arabic; fall back to a generic sentence
-          let message = '';
-          try {
-            const ctx = (error as { context?: Response }).context;
-            message = ctx ? (await ctx.json())?.message ?? '' : '';
-          } catch {
-            /* response was not JSON */
-          }
-          throw new Error(message || friendlyError(error));
-        }
-        return data as ScanDraft;
-      },
+      scanReceipt: (photo) => invokeFn<ScanDraft>('scan-receipt', { image: photo.base64, mimeType: photo.mimeType }),
+      askAssistant: (message, history) => invokeFn<AssistantReply>('assistant', { message, history: history.slice(-6) }),
       learnAliases: async (pairs) => {
         const rows = new Map<string, string>();
         for (const p of pairs) {

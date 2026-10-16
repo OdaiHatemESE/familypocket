@@ -46,6 +46,8 @@ export type ExpenseLine = {
   raw?: string;
   /** Read from a photo and not checked yet */
   uncertain?: boolean;
+  /** Described in words without a price; must be priced before saving */
+  needsPrice?: boolean;
   itemId: string | null;
   categoryId: string;
   name: string;
@@ -76,3 +78,6 @@ export type MemberBudget = {
   cats: Record<string, number>;
   sourceMonth: string | null; // month the numbers were saved in; null = never set
 };
+
+/** A receipt prepared elsewhere (e.g. by the assistant) and opened in the expense sheet for review */
+export type ReceiptPrefill = { lines: ExpenseLine[]; date?: string | null; note?: string | null; warnings?: string[] };

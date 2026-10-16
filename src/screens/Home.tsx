@@ -82,6 +82,25 @@ export function Home() {
       <Hero a={a} onPrev={() => setMonth(shiftMonth(month, -1))} onNext={() => setMonth(shiftMonth(month, 1))} />
 
       <View style={{ paddingHorizontal: 16 }}>
+        <Pressable
+          onPress={() => router.push('/assistant')}
+          accessibilityRole="button"
+          accessibilityLabel="افتح المساعد"
+          style={({ pressed }) => ({
+            flexDirection: 'row-reverse', alignItems: 'center', gap: 12, marginTop: 16, padding: 14, borderRadius: 20,
+            backgroundColor: C.surface, borderWidth: 1.5, borderColor: C.oasis + '30', opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <View style={{ width: 42, height: 42, borderRadius: 14, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="creation" size={22} color={C.oasisLight} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <T w="semibold">اسأل المساعد</T>
+            <T size={TS.small} color={C.sub}>«قديش صرفنا على الأكل؟» أو «اشتريت 2 كيلو بندورة بـ 8»</T>
+          </View>
+          <Icon name="chevron-left" size={22} color={C.faint} />
+        </Pressable>
+
         {expenses.length === 0 && fixed.length === 0 ? (
           <Card style={{ padding: 24, marginTop: 20, alignItems: 'center' }}>
             <CatTile icon="wallet-outline" color={C.oasis} size={56} />

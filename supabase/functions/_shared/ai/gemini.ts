@@ -5,6 +5,16 @@ const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 // falls through to the next, so a busy day degrades to the lighter model instead of failing.
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
 
+/** Models whose quota ran out recently, skipped while this server instance stays warm */
+const quotaUsedUntil = new Map<string, number>();
+
+const call = (model: string, apiKey: string, body: unknown) =>
+  fetch(`${ENDPOINT}/${model}:generateContent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify(body),
+  });
+
 export function geminiProvider(apiKey: string | undefined, preferredModel?: string): AiProvider {
   return {
     name: 'gemini',
@@ -24,20 +34,26 @@ export function geminiProvider(apiKey: string | undefined, preferredModel?: stri
       };
 
       let lastError = '';
+      const last = models[models.length - 1];
       for (const model of models) {
-        const res = await fetch(`${ENDPOINT}/${model}:generateContent`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-          body: JSON.stringify(body),
-        });
+        if ((quotaUsedUntil.get(model) ?? 0) > Date.now() && model !== last) continue;
+        let res = await call(model, apiKey, body);
+        // Overloaded (500/503) is usually a passing spike: one short retry on the same model first
+        if (res.status === 500 || res.status === 503) {
+          console.warn(`[gemini] ${model} ${res.status}, retrying once`);
+          await new Promise((r) => setTimeout(r, 1500));
+          res = await call(model, apiKey, body);
+        }
         if (res.status === 404) {
           lastError = `model ${model} not found`;
           continue;
         }
-        // 429 = our free quota for this model is used up; 500/503 = the model is overloaded right now
+        // 429 = our free quota for this model is used up; 500/503 = still overloaded
         if (res.status === 429 || res.status === 500 || res.status === 503) {
+          if (res.status === 429) quotaUsedUntil.set(model, Date.now() + 10 * 60 * 1000);
           lastError = `model ${model} busy (${res.status})`;
-          if (model !== models[models.length - 1]) continue;
+          console.warn(`[gemini] ${lastError}`);
+          if (model !== last) continue;
           throw new ProviderError('RATE_LIMITED', `Gemini busy: ${lastError}`);
         }
         if (!res.ok) throw new ProviderError('UPSTREAM', `Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);

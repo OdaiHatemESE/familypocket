@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ExpenseSheet } from '../../components/ExpenseSheet';
 import { TabsContext } from '../../tabsContext';
 import { C } from '../../theme';
-import { Expense } from '../../types';
+import { Expense, ReceiptPrefill } from '../../types';
 import { Icon, IconName, T } from '../../ui';
 import { monthKey } from '../../utils';
 
@@ -39,6 +39,8 @@ function TabBar({ state, navigation, onAdd }: BarProps & { onAdd: () => void }) 
     );
   };
   const routes = state.routes;
+  // The assistant is a full-screen chat with its own input bar
+  if (routes[state.index]?.name === 'assistant') return null;
   return (
     <View
       style={{
@@ -74,6 +76,7 @@ export default function TabsLayout() {
   const [scope, setScope] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
+  const [prefill, setPrefill] = useState<ReceiptPrefill | null>(null);
 
   const ctx = useMemo(
     () => ({
@@ -81,8 +84,9 @@ export default function TabsLayout() {
       setMonth,
       scope,
       setScope,
-      openAdd: () => (setEditing(null), setSheetOpen(true)),
-      openExpense: (e: Expense) => (setEditing(e), setSheetOpen(true)),
+      openAdd: () => (setEditing(null), setPrefill(null), setSheetOpen(true)),
+      openExpense: (e: Expense) => (setEditing(e), setPrefill(null), setSheetOpen(true)),
+      openDraft: (d: ReceiptPrefill) => (setEditing(null), setPrefill(d), setSheetOpen(true)),
     }),
     [month, scope],
   );
@@ -97,8 +101,9 @@ export default function TabsLayout() {
         <Tabs.Screen name="expenses" />
         <Tabs.Screen name="analysis" />
         <Tabs.Screen name="settings" />
+        <Tabs.Screen name="assistant" options={{ href: null }} />
       </Tabs>
-      <ExpenseSheet visible={sheetOpen} editing={editing} onClose={() => setSheetOpen(false)} />
+      <ExpenseSheet visible={sheetOpen} editing={editing} prefill={prefill} onClose={() => setSheetOpen(false)} />
     </TabsContext.Provider>
   );
 }
