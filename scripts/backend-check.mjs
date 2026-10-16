@@ -119,13 +119,13 @@ const fxOwner = await a.from('fixed_expenses').insert({ name: 'QA school bus', a
 ok(!fxOwner.error && fxOwner.data.owner_id === bId, 'fixed expense assigned to a responsible member', fxOwner.error?.message);
 
 // 5c. Items and receipt lines
-const item = await b.from('items').insert({ category_id: catId, name: 'QA dish soap', unit: 'علبة' }).select().single();
+const item = await b.from('items').insert({ category_id: catId, name: 'دواء جلي', unit: 'علبة' }).select().single();
 ok(!item.error, 'member adds an item with a unit', item.error?.message);
-const dupItem = await a.from('items').insert({ category_id: catId, name: 'QA dish soap', unit: 'علبة' });
+const dupItem = await a.from('items').insert({ category_id: catId, name: 'دواء جلي', unit: 'علبة' });
 ok(dupItem.error?.code === '23505', 'same item name cannot repeat in a category', dupItem.error?.code);
 const receipt = await b.from('expenses').insert({ amount: 45, note: 'QA market', category_id: catId, spent_on: today }).select().single();
 const lines = await b.from('expense_items').insert([
-  { expense_id: receipt.data.id, item_id: item.data.id, category_id: catId, name: 'QA dish soap', unit: 'علبة', quantity: 2, amount: 30 },
+  { expense_id: receipt.data.id, item_id: item.data.id, category_id: catId, name: 'دواء جلي', unit: 'علبة', quantity: 2, amount: 30 },
   { expense_id: receipt.data.id, item_id: null, category_id: catId, name: 'QA bread', unit: 'ربطة', quantity: 1.5, amount: 15 },
 ]).select();
 ok(lines.data?.length === 2, 'member records a receipt with quantities', lines.error?.message);
@@ -169,7 +169,7 @@ if (scanBody?.error === 'NOT_CONFIGURED') {
   ok(!scan.error && Array.isArray(scanBody?.lines), 'receipt photo is read', `${scanBody?.error ?? ''} ${scanBody?.message ?? ''}`.trim());
   if (Array.isArray(scanBody?.lines)) {
     note(`provider=${scanBody.provider} model=${scanBody.model} time=${ms}ms store=${scanBody.store} date=${scanBody.date} total=${scanBody.total} linesTotal=${scanBody.linesTotal}`);
-    for (const l of scanBody.lines) note(`line: ${l.raw} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.learned ? ' (learned)' : ''}${l.uncertain ? ' (check)' : ''}`);
+    for (const l of scanBody.lines) note(`line: ${l.raw.replace(/\s+/g, " ")} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.learned ? ' (learned)' : ''}${l.uncertain ? ' (check)' : ''}`);
     for (const w of scanBody.warnings ?? []) note(`warning: ${w}`);
     ok(scanBody.lines.length === 5, 'all 5 products found, discount and VAT not listed as items', String(scanBody.lines.length));
     ok(Math.abs((scanBody.linesTotal ?? 0) - 91.39) < 0.02, 'lines add up to the amount paid (VAT spread)', String(scanBody.linesTotal));

@@ -39,6 +39,9 @@ export function normalizeReceipt(
   today: string, // YYYY-MM-DD
 ): Draft {
   const itemById = new Map(items.map((i) => [i.id, i]));
+  // Same name as one of the family's items (ignoring diacritics, spacing and the definite article)
+  const key = (s: string) => normalizeAlias(s).replace(/(^|\s)ال/g, '$1');
+  const itemByName = new Map(items.map((i) => [key(i.name), i]));
   const catIds = new Set(categories.map((c) => c.id));
   const warnings: string[] = [];
 
@@ -52,7 +55,10 @@ export function normalizeReceipt(
 
     // A saved correction beats the model's guess; otherwise accept the model's item only if it really exists
     const learnedId = rawText ? aliases[normalizeAlias(rawText)] : undefined;
-    const item = (learnedId && itemById.get(learnedId)) || (l?.item_id ? itemById.get(l.item_id) : undefined);
+    const item =
+      (learnedId && itemById.get(learnedId)) ||
+      (l?.item_id ? itemById.get(l.item_id) : undefined) ||
+      (l?.suggested_name ? itemByName.get(key(String(l.suggested_name))) : undefined);
 
     const unit = item?.unit ?? (units.includes(l?.unit) ? l.unit : units[0]);
     const categoryId = item?.category_id ?? (l?.category_id && catIds.has(l.category_id) ? l.category_id : null);
