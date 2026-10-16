@@ -26,7 +26,7 @@ export function pickProvider(): AiProvider {
       } catch (e) {
         // Busy or down: try the backup. A bad answer (BAD_OUTPUT) is retried there too.
         if (!(e instanceof ProviderError) || e.code === 'NOT_CONFIGURED') throw e;
-        console.warn(`[ai] ${primary.name} ${e.code}, falling back to ${backup.name}`);
+        console.warn(`[ai] ${primary.name} ${e.code} (${e.message.slice(0, 300)}), falling back to ${backup.name}`);
         return await backup.json(req);
       }
     },

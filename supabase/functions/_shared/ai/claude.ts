@@ -27,7 +27,7 @@ export function claudeProvider(apiKey: string | undefined, model = DEFAULT_MODEL
         body: JSON.stringify({
           model,
           max_tokens: req.maxTokens ?? 4096,
-          temperature: 0,
+          // No `temperature`: current Claude models reject it; forced tool use already keeps the output structured
           tools: [{ name: req.name, description: `Return the ${req.name.replace(/_/g, ' ')}`, input_schema: toJsonSchema(req.schema) }],
           tool_choice: { type: 'tool', name: req.name },
           messages: [{ role: 'user', content }],
