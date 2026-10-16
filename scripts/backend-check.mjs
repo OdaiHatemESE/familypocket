@@ -11,9 +11,15 @@ const client = () => createClient(URL, KEY, { auth: { persistSession: false, aut
 const tag = Date.now().toString(36);
 const A = `qa_a_${tag}`, B = `qa_b_${tag}`, Cc = `qa_c_${tag}`;
 let failed = 0;
+const CI = !!process.env.GITHUB_ACTIONS;
+// In CI, failures and notes become annotations, which are readable from the API without log access
+const note = (msg) => console.log(CI ? `::notice::${msg}` : msg);
 const ok = (cond, name, extra = '') => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? `  (${extra})` : ''}`);
-  if (!cond) failed++;
+  if (!cond) {
+    failed++;
+    if (CI) console.log(`::error::${name}${extra ? ` (${extra})` : ''}`);
+  }
 };
 const signIn = async (u, p) => {
   const c = client();
@@ -151,13 +157,13 @@ if (scan.error) {
   try { scanBody = await scan.error.context.json(); } catch { scanBody = { error: String(scan.error) }; }
 }
 if (scanBody?.error === 'NOT_CONFIGURED') {
-  console.log('SKIP  receipt reading: GEMINI_API_KEY not set yet');
+  note('SKIP receipt reading: GEMINI_API_KEY not set yet');
 } else {
   ok(!scan.error && Array.isArray(scanBody?.lines), 'receipt photo is read', `${scanBody?.error ?? ''} ${scanBody?.message ?? ''}`.trim());
   if (Array.isArray(scanBody?.lines)) {
-    console.log(`      provider=${scanBody.provider} model=${scanBody.model} time=${ms}ms store=${scanBody.store} date=${scanBody.date} total=${scanBody.total} linesTotal=${scanBody.linesTotal}`);
-    for (const l of scanBody.lines) console.log(`      - ${l.raw} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.learned ? ' (learned)' : ''}${l.uncertain ? ' (check)' : ''}`);
-    for (const w of scanBody.warnings ?? []) console.log(`      ! ${w}`);
+    note(`provider=${scanBody.provider} model=${scanBody.model} time=${ms}ms store=${scanBody.store} date=${scanBody.date} total=${scanBody.total} linesTotal=${scanBody.linesTotal}`);
+    for (const l of scanBody.lines) note(`line: ${l.raw} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.learned ? ' (learned)' : ''}${l.uncertain ? ' (check)' : ''}`);
+    for (const w of scanBody.warnings ?? []) note(`warning: ${w}`);
     ok(scanBody.lines.length === 5, 'all 5 products found, discount and VAT not listed as items', String(scanBody.lines.length));
     ok(Math.abs((scanBody.linesTotal ?? 0) - 91.39) < 0.02, 'lines add up to the amount paid (VAT spread)', String(scanBody.linesTotal));
     ok(scanBody.date === '2026-10-14', 'receipt date read', String(scanBody.date));
