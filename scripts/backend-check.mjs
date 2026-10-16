@@ -155,7 +155,7 @@ ok((fakeScanLog.data?.length ?? 0) === 0, 'scan history cannot be deleted to dod
 const noAuth = await fetch(`${URL}/functions/v1/scan-receipt`, { method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' }, body: '{}' });
 ok(noAuth.status === 401, 'receipt reader refuses requests without sign-in', String(noAuth.status));
 
-const photo = readFileSync(new URL('./fixtures/receipt-carrefour.jpg', import.meta.url)).toString('base64');
+const photo = readFileSync(new globalThis.URL('./fixtures/receipt-carrefour.jpg', import.meta.url)).toString('base64');
 const t0 = Date.now();
 const scan = await b.functions.invoke('scan-receipt', { body: { image: photo, mimeType: 'image/jpeg' } });
 const ms = Date.now() - t0;
