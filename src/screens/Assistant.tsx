@@ -4,7 +4,7 @@ import React, { useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { qtyLabel } from '../budgets';
-import { AssistantReply, ChatTurn, useFamily } from '../family';
+import { AssistantReply, ChatTurn, FnError, useFamily } from '../family';
 import { useTabs } from '../tabsContext';
 import { C, F, TS } from '../theme';
 import { ExpenseLine } from '../types';
@@ -30,6 +30,7 @@ export function Assistant() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const scroller = useRef<ScrollView>(null);
   const nextId = useRef(1);
 
@@ -43,12 +44,22 @@ export function Assistant() {
     setText('');
     setBusy(true);
     try {
-      const r = await askAssistant(message, history);
+      let r: AssistantReply;
+      try {
+        r = await askAssistant(message, history);
+      } catch (e) {
+        // The AI service is sometimes briefly overloaded: wait a moment and try once more before giving up
+        if (!(e instanceof FnError) || e.code !== 'PROVIDER_BUSY') throw e;
+        setRetrying(true);
+        await new Promise((res) => setTimeout(res, 3000));
+        r = await askAssistant(message, history);
+      }
       setMsgs((ms) => [...ms, { id: nextId.current++, role: 'assistant', text: r.answer, draft: r.kind === 'receipt' ? r.draft : undefined }]);
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (e) {
       setMsgs((ms) => [...ms, { id: nextId.current++, role: 'error', text: (e as Error).message, retry: message }]);
     }
+    setRetrying(false);
     setBusy(false);
   };
 
@@ -157,7 +168,7 @@ export function Assistant() {
         {busy && (
           <Row style={{ alignSelf: 'flex-start', gap: 8, backgroundColor: C.surface, borderRadius: 18, borderBottomLeftRadius: 6, paddingHorizontal: 14, paddingVertical: 12 }}>
             <ActivityIndicator size="small" color={C.oasis} />
-            <T size={TS.small} color={C.sub}>عم بفكّر…</T>
+            <T size={TS.small} color={C.sub}>{retrying ? 'الخدمة مزدحمة، عم بحاول مرة ثانية…' : 'عم بفكّر…'}</T>
           </Row>
         )}
       </ScrollView>

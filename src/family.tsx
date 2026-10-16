@@ -44,18 +44,25 @@ export type AssistantReply =
   | { kind: 'answer'; answer: string }
   | { kind: 'receipt'; answer: string; draft: Omit<ScanDraft, 'provider' | 'model'> };
 
+/** An error from one of our server functions: a ready Arabic sentence plus a code such as PROVIDER_BUSY */
+export class FnError extends Error {
+  constructor(message: string, public code: string) {
+    super(message);
+  }
+}
+
 /** Calls one of our server functions; their errors carry a ready Arabic sentence in `message` */
 async function invokeFn<T>(name: string, body: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.functions.invoke(name, { body });
   if (error) {
-    let message = '';
+    let payload: { error?: string; message?: string } | null = null;
     try {
       const ctx = (error as { context?: Response }).context;
-      message = ctx ? (await ctx.json())?.message ?? '' : '';
+      payload = ctx ? await ctx.json() : null;
     } catch {
       /* response was not JSON */
     }
-    throw new Error(message || friendlyError(error));
+    throw new FnError(payload?.message || friendlyError(error), payload?.error ?? 'UNKNOWN');
   }
   return data as T;
 }

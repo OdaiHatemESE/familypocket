@@ -38,10 +38,11 @@ export function geminiProvider(apiKey: string | undefined, preferredModel?: stri
       for (const model of models) {
         if ((quotaUsedUntil.get(model) ?? 0) > Date.now() && model !== last) continue;
         let res = await call(model, apiKey, body);
-        // Overloaded (500/503) is usually a passing spike: one short retry on the same model first
-        if (res.status === 500 || res.status === 503) {
-          console.warn(`[gemini] ${model} ${res.status}, retrying once`);
-          await new Promise((r) => setTimeout(r, 1500));
+        // Overloaded (500/503) is usually a passing spike: two short retries on the same model first
+        for (const wait of [1200, 2500]) {
+          if (res.status !== 500 && res.status !== 503) break;
+          console.warn(`[gemini] ${model} ${res.status}, retrying in ${wait}ms`);
+          await new Promise((r) => setTimeout(r, wait));
           res = await call(model, apiKey, body);
         }
         if (res.status === 404) {

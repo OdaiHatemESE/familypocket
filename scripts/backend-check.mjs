@@ -215,6 +215,13 @@ if (q1?.error !== 'NOT_CONFIGURED') {
   const bread = buy?.draft?.lines?.find((l) => l.needsPrice);
   ok(bread && bread.amount === 0, 'item said without a price is flagged for a price', JSON.stringify(buy?.draft?.lines));
   ok(buy?.draft?.date === yesterday, '"مبارح" becomes yesterday\'s date', `${buy?.draft?.date} vs ${yesterday}`);
+  // A short follow-up with Arabic-Indic digits, after asking to record purchases
+  const short = await ask('دجاج ٣ ٦٠ درهم', [
+    { role: 'user', text: 'سجل مشترياتي' },
+    { role: 'assistant', text: 'اكتبلي شو اشتريت مع الكميات والأسعار.' },
+  ]);
+  const chick = short?.draft?.lines?.[0];
+  ok(short?.kind === 'receipt' && chick?.quantity === 3 && chick?.amount === 60, 'short follow-up "دجاج ٣ ٦٠ درهم" becomes 3 for 60', JSON.stringify(short?.draft?.lines ?? short));
 }
 
 // 6. Owner-only actions

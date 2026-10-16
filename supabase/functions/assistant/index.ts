@@ -11,6 +11,14 @@ import { catalogText, lineRules, RawReceipt, receiptSchema } from '../_shared/re
 type Turn = { role: 'user' | 'assistant'; text: string };
 type Result = { kind: 'answer' | 'receipt' | 'other'; answer: string; receipt: RawReceipt };
 
+/** ٣٫٥ → 3.5: phones often type Arabic-Indic digits */
+const westernDigits = (t: string) =>
+  t
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/\u066B/g, '.')
+    .replace(/\u066C/g, ',');
+
 const SCHEMA = {
   type: 'object',
   properties: {
@@ -34,12 +42,12 @@ Deno.serve(async (req) => {
   } catch {
     return fail(400, 'BAD_REQUEST', 'الطلب غير صالح');
   }
-  const message = String(body.message ?? '').trim().slice(0, 1500);
+  const message = westernDigits(String(body.message ?? '').trim().slice(0, 1500));
   if (!message) return fail(400, 'EMPTY', 'اكتب رسالتك أولاً');
   const history = (Array.isArray(body.history) ? body.history : [])
     .filter((t) => (t?.role === 'user' || t?.role === 'assistant') && typeof t.text === 'string')
-    .slice(-6)
-    .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text.slice(0, 600)}`)
+    .slice(-8)
+    .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${westernDigits(t.text.slice(0, 600))}`)
     .join('\n');
 
   const limited = await overDailyLimit(s, 'assistant', Number(Deno.env.get('ASSISTANT_DAILY_LIMIT') ?? 60));
@@ -58,6 +66,8 @@ Today is ${weekday} ${today}. The person writing is ${me.data?.display_name ?? '
 
 Decide what their message is and set "kind":
 - "receipt": they are telling you about things they bought or paid for and want them recorded (e.g. "اشتريت…", "سجّل…", "دفعت…").
+  A bare list of products with numbers is a purchase too, especially after they said they want to record something:
+  "دجاج 3 60 درهم" means 3 of chicken for 60 in total (pick the unit the family uses for that item; if unsure, حبة and uncertain).
   Put one line per product in "receipt.lines":
   - raw_text: the words they used for that product.
 ${lineRules(catalog.units)}
@@ -72,8 +82,11 @@ ${lineRules(catalog.units)}
   receipt.lines must be empty.
 - "other": greetings or anything else. Reply briefly and say what you can do: answer questions about their spending,
   or record a purchase they describe, e.g. "اشتريت 2 كيلو بندورة بـ 8 دراهم وكيس خبز بـ 3". receipt.lines must be empty.
+  If they want to record a receipt but have not listed products yet, ask them to write the products with quantity and price,
+  in one line, with a short example. Do not list your abilities again.
 
 How to write "answer": the same Arabic dialect as the user, warm and to the point, at most 7 short lines.
+Greet them only in your first reply of the chat; after that, answer directly. Read the earlier messages so follow-ups make sense.
 Plain text only: no markdown, no asterisks, no #, no tables. Use "• " at the start of a line for lists.
 Write amounts like "1,250 درهم" with at most 2 decimals.
 
