@@ -1,8 +1,9 @@
 import { buildPrompt, ProviderError, RawReceipt, RECEIPT_SCHEMA, ReceiptProvider, ScanInput } from './types.ts';
 
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
-// Tried in order; a model that no longer exists (404) falls through to the next one
-const FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
+// Tried in order. A model that no longer exists (404) or whose free quota is used up (429) falls through to the next,
+// so a busy day degrades to the lighter model instead of failing.
+const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
 
 export function geminiProvider(apiKey: string | undefined, preferredModel?: string): ReceiptProvider {
   return {
@@ -38,7 +39,11 @@ export function geminiProvider(apiKey: string | undefined, preferredModel?: stri
           lastError = `model ${model} not found`;
           continue;
         }
-        if (res.status === 429) throw new ProviderError('RATE_LIMITED', 'Gemini free-tier limit reached');
+        if (res.status === 429) {
+          lastError = `model ${model} rate limited`;
+          if (model !== models[models.length - 1]) continue;
+          throw new ProviderError('RATE_LIMITED', 'Gemini free-tier limit reached');
+        }
         if (!res.ok) throw new ProviderError('UPSTREAM', `Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
         const json = await res.json();
         const text: string | undefined = json?.candidates?.[0]?.content?.parts

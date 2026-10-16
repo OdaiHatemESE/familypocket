@@ -3,7 +3,7 @@
 // Settings (Supabase → Edge Functions → Secrets):
 //   RECEIPT_PROVIDER   "gemini" (default) or "claude"
 //   GEMINI_API_KEY     required for gemini
-//   GEMINI_MODEL       optional, e.g. "gemini-3.5-flash-lite"
+//   GEMINI_MODEL       optional, tried first (default order: gemini-3.6-flash, then the Flash-Lite models)
 //   ANTHROPIC_API_KEY  required for claude
 //   CLAUDE_MODEL       optional, e.g. "claude-haiku-5-5"
 //   SCAN_DAILY_LIMIT   optional, receipts per family per day (default 30)

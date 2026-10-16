@@ -83,7 +83,7 @@ Rules:
   "JUICE 1.75L" bought once is quantity 1, unit عبوة; "WATER 6x1.5L" is 1 كرتونة. Use كيلو or لتر only for products sold loose by weight or volume
   (e.g. "BANANA 1.120KG" is 1.12 كيلو). Tins and boxes → علبة. Bags → كيس. Bread → ربطة or رغيف. Otherwise → حبة.
 - line_total: the amount paid for that line, as a number without currency.
-- item_id: the id of the family's existing item that is clearly the same product (brand and size may differ). Otherwise null.
+- item_id: before suggesting anything new, look through the family items. If one of them is the same kind of product, use its id even when the brand, size or wording differ (any laundry detergent → the family's detergent item; any brand of eggs → their eggs item). Use null only when no family item is that kind of product.
 - suggested_name: a short, generic Arabic name a family would use (e.g. "PERSIL GEL 3L" → "سائل غسيل", "LAMB CHOPS" → "ريش غنم"). Use the existing item's name when item_id is set.
 - category_id: the closest family category for the product (groceries and cleaning supplies usually belong to the household category). Use null only when no category is even loosely related.
 - uncertain: true if the line is hard to read or you guessed part of it.
