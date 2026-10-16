@@ -178,6 +178,9 @@ if (scanBody?.error === 'NOT_CONFIGURED') {
     ok(soap?.itemId === item.data.id && soap?.quantity === 2, "known item matched to the family's item with quantity 2", JSON.stringify(soap));
     const chicken = scanBody.lines.find((l) => /chicken/i.test(l.raw));
     ok(chicken && Math.abs(chicken.quantity - 1.25) < 0.01 && chicken.unit === 'كيلو', 'weighed item read as 1.25 كيلو', JSON.stringify(chicken));
+    const milk = scanBody.lines.find((l) => /milk/i.test(l.raw));
+    ok(milk && milk.quantity === 1 && milk.amount < 10.5, 'packaged item counted as 1 pack with its discount applied', JSON.stringify(milk));
+    ok(scanBody.lines.every((l) => l.categoryId), 'every line given a family category', JSON.stringify(scanBody.lines.filter((l) => !l.categoryId).map((l) => l.raw)));
   }
 }
 

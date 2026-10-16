@@ -79,11 +79,13 @@ Rules:
 - One entry per product line. Skip subtotal, total, VAT/tax, payment, change, loyalty points, and header/footer lines.
 - If a discount or promotion line applies to the product above it, subtract it from that product's line_total. Never output discounts as lines.
 - quantity: the count or weight bought (e.g. 2, 1.25). Weighed items use their weight. Default to 1 when not shown.
-- unit: choose one of: ${input.units.join('، ')}. Weighed food → كيلو. Bottles of liquid → عبوة or لتر. Bread → ربطة or رغيف.
+- unit: choose one of: ${input.units.join('، ')}. Count packaged products by the pack, not by the size printed in their name:
+  "JUICE 1.75L" bought once is quantity 1, unit عبوة; "WATER 6x1.5L" is 1 كرتونة. Use كيلو or لتر only for products sold loose by weight or volume
+  (e.g. "BANANA 1.120KG" is 1.12 كيلو). Tins and boxes → علبة. Bags → كيس. Bread → ربطة or رغيف. Otherwise → حبة.
 - line_total: the amount paid for that line, as a number without currency.
 - item_id: the id of the family's existing item that is clearly the same product (brand and size may differ). Otherwise null.
-- suggested_name: a short, generic Arabic name a family would use (e.g. "FAIRY LEMON 750ML" → "دواء جلي", "CHICKEN BREAST" → "صدر دجاج"). Use the existing item's name when item_id is set.
-- category_id: the best family category for the product, or null if none fits.
+- suggested_name: a short, generic Arabic name a family would use (e.g. "PERSIL GEL 3L" → "سائل غسيل", "LAMB CHOPS" → "ريش غنم"). Use the existing item's name when item_id is set.
+- category_id: the closest family category for the product (groceries and cleaning supplies usually belong to the household category). Use null only when no category is even loosely related.
 - uncertain: true if the line is hard to read or you guessed part of it.
 - date as YYYY-MM-DD. total is the final amount paid including VAT.
 - Return only data visible on the receipt. If the image is not a receipt, return empty lines and null fields.
