@@ -9,7 +9,7 @@ import { normalizeReceipt } from '../_shared/receipt/normalize.ts';
 import { catalogText, lineRules, RawReceipt, receiptSchema } from '../_shared/receipt/schema.ts';
 
 type Turn = { role: 'user' | 'assistant'; text: string };
-type Result = { kind: 'answer' | 'receipt' | 'other'; answer: string; receipt: RawReceipt };
+type Result = { receipt: RawReceipt; answer: string };
 
 /** ٣٫٥ → 3.5: phones often type Arabic-Indic digits */
 const westernDigits = (t: string) =>
@@ -19,14 +19,15 @@ const westernDigits = (t: string) =>
     .replace(/\u066B/g, '.')
     .replace(/\u066C/g, ',');
 
+// The receipt comes first, so the model commits to the purchase lines before writing its sentence.
+// A reply with lines is a receipt; one without is an answer.
 const SCHEMA = {
   type: 'object',
   properties: {
-    kind: { type: 'string', enum: ['answer', 'receipt', 'other'] },
-    answer: { type: 'string' },
     receipt: receiptSchema(true),
+    answer: { type: 'string' },
   },
-  required: ['kind', 'answer', 'receipt'],
+  required: ['receipt', 'answer'],
 };
 
 Deno.serve(async (req) => {
@@ -64,8 +65,8 @@ Deno.serve(async (req) => {
   const prompt = `You are the assistant inside "مصاريفي", a family budgeting app in the UAE. Amounts are in AED (درهم).
 Today is ${weekday} ${today}. The person writing is ${me.data?.display_name ?? 'a family member'}.
 
-Decide what their message is and set "kind":
-- "receipt": they are telling you about things they bought or paid for and want them recorded (e.g. "اشتريت…", "سجّل…", "دفعت…").
+First decide what their message is:
+- A PURCHASE: they are telling you about things they bought or paid for and want them recorded (e.g. "اشتريت…", "سجّل…", "دفعت…").
   A bare list of products with numbers is a purchase too, especially after they said they want to record something:
   "دجاج 3 60 درهم" means 3 of chicken for 60 in total (pick the unit the family uses for that item; if unsure, حبة and uncertain).
   Put one line per product in "receipt.lines":
@@ -76,11 +77,12 @@ ${lineRules(catalog.units)}
   receipt.total: the overall amount if they said one ("ودفعت 60 على الكل"), else null. receipt.store: the shop if they named it, else null.
   receipt.date: YYYY-MM-DD. Work out words like "مبارح" or "يوم الخميس" from today's date; null when they did not say (means today).
   "answer": one short sentence telling them the receipt is ready to review and save. Do not repeat the lines.
-- "answer": a question or request about their spending, budgets, items, prices, obligations or saving advice.
+  Never say a receipt is ready unless receipt.lines holds its products.
+- A QUESTION: a question or request about their spending, budgets, items, prices, obligations or saving advice.
   Answer from the FAMILY DATA below only. Never invent numbers; if the data does not hold the answer, say so plainly.
   Use the pre-computed totals; when you add several numbers, add them carefully. Name months in Arabic.
   receipt.lines must be empty.
-- "other": greetings or anything else. Reply briefly and say what you can do: answer questions about their spending,
+- ANYTHING ELSE: greetings and the like. Reply briefly and say what you can do: answer questions about their spending,
   or record a purchase they describe, e.g. "اشتريت 2 كيلو بندورة بـ 8 دراهم وكيس خبز بـ 3". receipt.lines must be empty.
   If they want to record a receipt but have not listed products yet, ask them to write the products with quantity and price,
   in one line, with a short example. Do not list your abilities again.
@@ -103,9 +105,9 @@ ${facts}`;
   try {
     const { data, model } = await provider.json<Result>({ prompt, schema: SCHEMA, name: 'reply_to_user', maxTokens: 4096 });
     await logUsage(s, 'assistant', provider.name, model, true);
-    const lines = data?.receipt?.lines ?? [];
+    const lines = Array.isArray(data?.receipt?.lines) ? data.receipt.lines : [];
     const answer = String(data?.answer ?? '').replace(/\*\*/g, '').trim();
-    if (data?.kind === 'receipt' && lines.length) {
+    if (lines.length) {
       const draft = normalizeReceipt(data.receipt, catalog.items, catalog.categories, catalog.units, catalog.aliases, today, { priceOptional: true });
       return reply(200, { kind: 'receipt', answer: answer || 'جهّزتلك الفاتورة، راجعها واحفظها.', draft, provider: provider.name, model });
     }
