@@ -184,6 +184,39 @@ if (scanBody?.error === 'NOT_CONFIGURED') {
   }
 }
 
+// 5e. The assistant: questions answered from the family's data, purchases described in words
+const noAuthChat = await fetch(`${URL}/functions/v1/assistant`, { method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' }, body: '{}' });
+ok(noAuthChat.status === 401, 'assistant refuses requests without sign-in', String(noAuthChat.status));
+const tomato = await b.from('items').insert({ category_id: catId, name: 'طماطم', unit: 'كيلو' }).select().single();
+const ask = async (message, history = []) => {
+  const t = Date.now();
+  const res = await b.functions.invoke('assistant', { body: { message, history } });
+  let body = res.data;
+  if (res.error) {
+    try { body = await res.error.context.json(); } catch { body = { error: String(res.error) }; }
+  }
+  note(`assistant (${Date.now() - t}ms, ${body?.model ?? body?.error}): ${message} → ${(body?.answer ?? body?.message ?? '').replace(/\s+/g, ' ')}`);
+  return body;
+};
+// This month the family has: QA Member 50 + rent 100 (charged to QA Member as the responsible member) + receipt 45 = 195
+const q1 = await ask('قديش صرفنا هالشهر كعائلة؟');
+if (q1?.error !== 'NOT_CONFIGURED') {
+  ok(q1?.kind === 'answer' && /195/.test(q1?.answer ?? ''), "question answered from the family's real total (195)", JSON.stringify(q1));
+  const q2 = await ask('مين صرف أكثر هالشهر؟');
+  ok(q2?.kind === 'answer' && /QA Member/.test(q2?.answer ?? ''), 'question about members answered by name', JSON.stringify(q2));
+  const yesterday = new Date(Date.now() + 4 * 3600 * 1000 - 86400000).toISOString().slice(0, 10);
+  const buy = await ask('اشتريت مبارح 4 كيلو بندورة بـ 12 درهم و2 علبة فيري بـ 30 وكيس خبز');
+  ok(buy?.kind === 'receipt' && buy?.draft?.lines?.length === 3, 'purchase in words becomes a 3-line receipt', JSON.stringify(buy?.draft?.lines ?? buy));
+  for (const l of buy?.draft?.lines ?? []) note(`spoken line: ${l.raw} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.needsPrice ? ' (needs price)' : ''}`);
+  const tom = buy?.draft?.lines?.find((l) => l.itemId === tomato.data?.id);
+  ok(tom && tom.quantity === 4 && tom.amount === 12 && tom.unit === 'كيلو', "بندورة matched to the family's طماطم, 4 كيلو for 12", JSON.stringify(buy?.draft?.lines?.[0]));
+  const soap2 = buy?.draft?.lines?.find((l) => l.itemId === item.data.id);
+  ok(soap2 && soap2.quantity === 2 && soap2.amount === 30, "فيري matched to the family's دواء جلي, 2 for 30", JSON.stringify(soap2));
+  const bread = buy?.draft?.lines?.find((l) => l.needsPrice);
+  ok(bread && bread.amount === 0, 'item said without a price is flagged for a price', JSON.stringify(buy?.draft?.lines));
+  ok(buy?.draft?.date === yesterday, '"مبارح" becomes yesterday\'s date', `${buy?.draft?.date} vs ${yesterday}`);
+}
+
 // 6. Owner-only actions
 const bTry = await b.rpc('set_member_password', { p_user: (await a.auth.getUser()).data.user.id, p_password: 'hacked123' });
 ok(bTry.error?.message === 'OWNER_ONLY', 'member cannot reset passwords', bTry.error?.message);

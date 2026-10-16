@@ -3,7 +3,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { loginEmail } from './lib/config';
 import { friendlyError, supabase } from './lib/supabase';
 import { resolveAll } from './budgets';
-import { normalizeAlias } from '../supabase/functions/scan-receipt/alias';
+import { normalizeAlias } from '../supabase/functions/_shared/receipt/alias';
 import { BudgetRow, Category, CategoryBudgetRow, Expense, ExpenseLine, FixedExpense, Household, Item, Member, MemberBudget } from './types';
 import { monthKey, shiftMonth } from './utils';
 

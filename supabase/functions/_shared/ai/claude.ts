@@ -1,4 +1,4 @@
-import { buildPrompt, ProviderError, RawReceipt, RECEIPT_SCHEMA, ReceiptProvider, ScanInput } from './types.ts';
+import { AiProvider, JsonRequest, ProviderError } from './types.ts';
 
 const DEFAULT_MODEL = 'claude-haiku-5-5';
 
@@ -13,37 +13,32 @@ function toJsonSchema(node: unknown): unknown {
   return out;
 }
 
-export function claudeProvider(apiKey: string | undefined, model = DEFAULT_MODEL): ReceiptProvider {
+export function claudeProvider(apiKey: string | undefined, model = DEFAULT_MODEL): AiProvider {
   return {
     name: 'claude',
-    async scan(input: ScanInput) {
+    async json<T>(req: JsonRequest) {
       if (!apiKey) throw new ProviderError('NOT_CONFIGURED', 'ANTHROPIC_API_KEY is not set');
+      const content: Record<string, unknown>[] = [];
+      if (req.image) content.push({ type: 'image', source: { type: 'base64', media_type: req.image.mimeType, data: req.image.base64 } });
+      content.push({ type: 'text', text: req.prompt });
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
           model,
-          max_tokens: 4096,
+          max_tokens: req.maxTokens ?? 4096,
           temperature: 0,
-          tools: [{ name: 'record_receipt', description: 'Record the extracted receipt', input_schema: toJsonSchema(RECEIPT_SCHEMA) }],
-          tool_choice: { type: 'tool', name: 'record_receipt' },
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'image', source: { type: 'base64', media_type: input.mimeType, data: input.imageBase64 } },
-                { type: 'text', text: buildPrompt(input) },
-              ],
-            },
-          ],
+          tools: [{ name: req.name, description: `Return the ${req.name.replace(/_/g, ' ')}`, input_schema: toJsonSchema(req.schema) }],
+          tool_choice: { type: 'tool', name: req.name },
+          messages: [{ role: 'user', content }],
         }),
       });
-      if (res.status === 429) throw new ProviderError('RATE_LIMITED', 'Claude rate limit reached');
+      if (res.status === 429 || res.status === 529) throw new ProviderError('RATE_LIMITED', `Claude busy (${res.status})`);
       if (!res.ok) throw new ProviderError('UPSTREAM', `Claude ${res.status}: ${(await res.text()).slice(0, 300)}`);
       const json = await res.json();
       const block = json?.content?.find((b: { type: string }) => b.type === 'tool_use');
-      if (!block?.input) throw new ProviderError('BAD_OUTPUT', 'Claude returned no receipt');
-      return { receipt: block.input as RawReceipt, model };
+      if (!block?.input) throw new ProviderError('BAD_OUTPUT', 'Claude returned no result');
+      return { data: block.input as T, model };
     },
   };
 }

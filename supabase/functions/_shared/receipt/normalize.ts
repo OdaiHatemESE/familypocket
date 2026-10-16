@@ -1,7 +1,7 @@
 // Validates what a provider returned against the family's own data and tidies it into a review draft.
 // Pure functions only, so they can be tested without a network.
 import { normalizeAlias } from './alias.ts';
-import type { CatalogCategory, CatalogItem, RawReceipt } from './providers/types.ts';
+import type { CatalogCategory, CatalogItem, RawReceipt } from './schema.ts';
 
 export { normalizeAlias };
 
@@ -16,6 +16,7 @@ export type DraftLine = {
   isNew: boolean; // not one of the family's items yet
   uncertain: boolean;
   learned: boolean; // matched through a saved correction
+  needsPrice: boolean; // a typed purchase without a price: amount is 0 until the user fills it in
 };
 
 export type Draft = {
@@ -37,6 +38,7 @@ export function normalizeReceipt(
   units: string[],
   aliases: Record<string, string>, // normalised alias → item id
   today: string, // YYYY-MM-DD
+  opts: { priceOptional?: boolean } = {},
 ): Draft {
   const itemById = new Map(items.map((i) => [i.id, i]));
   // Same name as one of the family's items (ignoring diacritics, spacing and the definite article)
@@ -49,7 +51,9 @@ export function normalizeReceipt(
   for (const l of Array.isArray(raw?.lines) ? raw.lines : []) {
     const rawText = String(l?.raw_text ?? '').trim();
     let amount = num(l?.line_total);
-    if (!isFinite(amount) || amount < 0) continue;
+    const needsPrice = !!opts.priceOptional && (!isFinite(amount) || amount <= 0);
+    if (needsPrice) amount = 0;
+    else if (!isFinite(amount) || amount < 0) continue;
     let quantity = num(l?.quantity);
     if (!isFinite(quantity) || quantity <= 0) quantity = 1;
 
@@ -73,18 +77,25 @@ export function normalizeReceipt(
       quantity: Math.round(quantity * 1000) / 1000,
       amount: round2(amount),
       isNew: !item,
-      uncertain: !!l?.uncertain || !categoryId,
+      uncertain: !!l?.uncertain || !categoryId || needsPrice,
       learned: !!learnedId && !!item,
+      needsPrice,
     });
   }
 
   let total = num(raw?.total);
   if (!isFinite(total) || total <= 0) total = NaN;
+  // "…and paid 60 for everything": when only one line has no price, it gets what is left of the total
+  const unpricedLines = lines.filter((l) => l.needsPrice);
+  if (unpricedLines.length === 1 && isFinite(total)) {
+    const rest = round2(total - lines.reduce((a, l) => a + l.amount, 0));
+    if (rest > 0) Object.assign(unpricedLines[0], { amount: rest, needsPrice: false, uncertain: !unpricedLines[0].categoryId });
+  }
   let linesTotal = round2(lines.reduce((a, l) => a + l.amount, 0));
 
   // Receipts in the UAE often list prices before 5% VAT. When the gap is small, spread it across the lines
   // so the receipt adds up to what was actually paid.
-  if (isFinite(total) && linesTotal > 0 && Math.abs(total - linesTotal) > 0.01) {
+  if (isFinite(total) && linesTotal > 0 && Math.abs(total - linesTotal) > 0.01 && !lines.some((l) => l.needsPrice)) {
     const gap = total - linesTotal;
     if (Math.abs(gap) / linesTotal <= 0.08) {
       let assigned = 0;
@@ -106,8 +117,10 @@ export function normalizeReceipt(
   let date = typeof raw?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.date) ? raw.date : null;
   if (date && (date > today || date < '2020-01-01')) date = null;
 
+  const unpriced = lines.filter((l) => l.needsPrice).map((l) => `«${l.name}»`);
+  if (unpriced.length) warnings.push(`ما ذكرت سعر ${unpriced.join('، ')}. اضغط على السطر واكتب سعره قبل الحفظ.`);
   if (!lines.length) warnings.push('ما قدرنا نقرأ أصناف من الصورة. جرّبوا صورة أوضح للفاتورة كاملة.');
-  const unsure = lines.filter((l) => l.uncertain).length;
+  const unsure = lines.filter((l) => l.uncertain && !l.needsPrice).length;
   if (unsure) warnings.push(unsure === 1 ? 'في سطر واحد محتاج مراجعة.' : `في ${unsure} أسطر محتاجة مراجعة.`);
 
   return {

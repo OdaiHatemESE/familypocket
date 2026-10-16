@@ -1,30 +1,25 @@
-import { buildPrompt, ProviderError, RawReceipt, RECEIPT_SCHEMA, ReceiptProvider, ScanInput } from './types.ts';
+import { AiProvider, JsonRequest, ProviderError } from './types.ts';
 
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 // Tried in order. A model that no longer exists (404), whose free quota is used up (429) or that is overloaded (500/503)
 // falls through to the next, so a busy day degrades to the lighter model instead of failing.
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
 
-export function geminiProvider(apiKey: string | undefined, preferredModel?: string): ReceiptProvider {
+export function geminiProvider(apiKey: string | undefined, preferredModel?: string): AiProvider {
   return {
     name: 'gemini',
-    async scan(input: ScanInput) {
+    async json<T>(req: JsonRequest) {
       if (!apiKey) throw new ProviderError('NOT_CONFIGURED', 'GEMINI_API_KEY is not set');
       const models = [...new Set([preferredModel, ...FALLBACK_MODELS].filter(Boolean) as string[])];
+      const parts: Record<string, unknown>[] = [{ text: req.prompt }];
+      if (req.image) parts.push({ inline_data: { mime_type: req.image.mimeType, data: req.image.base64 } });
       const body = {
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: buildPrompt(input) },
-              { inline_data: { mime_type: input.mimeType, data: input.imageBase64 } },
-            ],
-          },
-        ],
+        contents: [{ role: 'user', parts }],
         generationConfig: {
           temperature: 0,
           response_mime_type: 'application/json',
-          response_schema: RECEIPT_SCHEMA,
+          response_schema: req.schema,
+          ...(req.maxTokens ? { maxOutputTokens: req.maxTokens } : {}),
         },
       };
 
@@ -52,7 +47,7 @@ export function geminiProvider(apiKey: string | undefined, preferredModel?: stri
           .join('');
         if (!text) throw new ProviderError('BAD_OUTPUT', `Gemini returned no text (${json?.candidates?.[0]?.finishReason ?? 'unknown'})`);
         try {
-          return { receipt: JSON.parse(text) as RawReceipt, model };
+          return { data: JSON.parse(text) as T, model };
         } catch {
           throw new ProviderError('BAD_OUTPUT', 'Gemini returned invalid JSON');
         }
