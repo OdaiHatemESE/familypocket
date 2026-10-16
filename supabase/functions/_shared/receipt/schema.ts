@@ -55,9 +55,14 @@ export const lineRules = (units: string[]) => `- quantity: the count or weight b
 - unit: choose one of: ${units.join('، ')}. Count packaged products by the pack, not by the size printed in their name:
   "JUICE 1.75L" bought once is quantity 1, unit عبوة; "WATER 6x1.5L" is 1 كرتونة. Use كيلو or لتر only for products sold loose by weight or volume
   (e.g. "BANANA 1.120KG" is 1.12 كيلو). Tins and boxes → علبة. Bags → كيس. Bread → ربطة or رغيف. Otherwise → حبة.
-- item_id: before suggesting anything new, look through the family items. If one of them is the same kind of product, use its id even when the brand, size, dialect word or wording differ (any laundry detergent → the family's detergent item; any brand of eggs → their eggs item; بندورة and طماطم are the same item). Use null only when no family item is that kind of product.
+- item_id: before suggesting anything new, work out what kind of product each family item is, then look for the same kind.
+  Family item names are often colloquial Levantine or Gulf Arabic: "دواء جلي" is dishwashing liquid, "دواء غسيل" is laundry detergent,
+  "محارم" or "كلينكس" are tissues, "بندورة" and "طماطم" are both tomatoes. Use the family item's id when it is the same kind of
+  product, even if the brand, size or wording differ (any brand of dishwashing liquid → their dishwashing item;
+  any brand of eggs → their eggs item). Use null only when no family item is that kind of product.
 - suggested_name: a short, generic Arabic name a family would use (e.g. "PERSIL GEL 3L" → "سائل غسيل", "LAMB CHOPS" → "ريش غنم"). Use the existing item's name when item_id is set.
-- category_id: the closest family category for the product (groceries and cleaning supplies usually belong to the household category). Use null only when no category is even loosely related.`;
+- category_id: always one of the family category ids: the closest one, even if the match is loose. Food, drinks and
+  cleaning supplies go to the household or groceries category when there is no closer one. Use null only for a line that is not a product.`;
 
 export const catalogText = (c: Catalog) => `Family categories (id | name):
 ${c.categories.map((x) => `${x.id} | ${x.name}`).join('\n')}
