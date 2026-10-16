@@ -22,7 +22,7 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
   start.setUTCMonth(start.getUTCMonth() - 12);
   const from = start.toISOString().slice(0, 10);
 
-  const [profilesRes, expRes, fixedRes, budRes, catBudRes, itemsRes] = await Promise.all([
+  const [profilesRes, expRes, fixedRes, budRes, catBudRes, itemsRes, payRes, resRes, incRes] = await Promise.all([
     supabase.from('profiles').select('id, display_name, active'),
     supabase
       .from('expenses')
@@ -30,10 +30,13 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
       .gte('spent_on', from)
       .order('spent_on', { ascending: false })
       .limit(6000),
-    supabase.from('fixed_expenses').select('id, name, amount, due_day, active, owner_id, category_id'),
+    supabase.from('fixed_expenses').select('id, name, amount, due_day, active, owner_id, category_id, kind, every_months, variable'),
     supabase.from('member_budgets').select('user_id, month, total'),
     supabase.from('member_category_budgets').select('user_id, month, category_id, amount'),
     supabase.from('items').select('id, name'),
+    supabase.from('commitment_payments').select('fixed_id, due_date, amount, method, reference, expense_id').order('due_date'),
+    supabase.from('commitment_reserves').select('fixed_id, month, amount'),
+    supabase.from('member_incomes').select('user_id, month, amount'),
   ]);
 
   const people = new Map((profilesRes.data ?? []).map((p) => [p.id, p.display_name as string]));
@@ -59,14 +62,21 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
     return [...by.entries()];
   };
 
-  type MonthAgg = { total: number; count: number; byCat: Map<string, number>; byMember: Map<string, number>; byMemberCat: Map<string, number> };
+  // Day-to-day spending vs commitments (rent, bills…) vs transfers to family and savings
+  const bucket = (e: Exp) => {
+    if (!e.fixed_id) return 'daily';
+    const k = fixedById.get(e.fixed_id)?.kind;
+    return k === 'transfer' || k === 'saving' ? 'transfers' : 'commitments';
+  };
+  type MonthAgg = { total: number; count: number; byCat: Map<string, number>; byMember: Map<string, number>; byMemberCat: Map<string, number>; byBucket: Map<string, number> };
   const months = new Map<string, MonthAgg>();
   const items = new Map<string, Map<string, { qty: number; amount: number; times: number; unit: string; cat: string }>>();
   for (const e of expenses) {
     const m = e.spent_on.slice(0, 7);
-    if (!months.has(m)) months.set(m, { total: 0, count: 0, byCat: new Map(), byMember: new Map(), byMemberCat: new Map() });
+    if (!months.has(m)) months.set(m, { total: 0, count: 0, byCat: new Map(), byMember: new Map(), byMemberCat: new Map(), byBucket: new Map() });
     const a = months.get(m)!;
     a.total += Number(e.amount);
+    add(a.byBucket, bucket(e), Number(e.amount));
     a.count += 1;
     const o = owner(e) ?? '';
     add(a.byMember, o, Number(e.amount));
@@ -90,14 +100,15 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
   out.push(`MEMBERS: ${[...people.entries()].map(([id, n]) => n + ((profilesRes.data ?? []).find((p) => p.id === id)?.active ? '' : ' (removed)')).join('، ')}`);
   out.push(`CATEGORIES: ${categories.map((c) => c.name).join('، ')}`);
 
-  out.push('\nMONTHLY TOTALS (AED; month | total | number of expenses | by category | by member):');
+  out.push('\nMONTHLY TOTALS (AED; month | total | day-to-day / commitments / transfers and savings | number of expenses | by category | by member):');
   const monthKeys = [...months.keys()].sort().reverse();
   if (!monthKeys.length) out.push('(no expenses recorded yet)');
   for (const m of monthKeys) {
     const a = months.get(m)!;
     const cats = [...a.byCat.entries()].sort((x, y) => y[1] - x[1]).map(([c, v]) => `${catName.get(c) ?? '?'} ${r2(v)}`).join('، ');
     const mem = [...a.byMember.entries()].map(([u, v]) => `${who(u)} ${r2(v)}`).join('، ');
-    out.push(`${monthName(m)}${m === thisMonth ? ' (current, until ' + today + ')' : ''} | ${r2(a.total)} | ${a.count} | ${cats} | ${mem}`);
+    const split = ['daily', 'commitments', 'transfers'].map((k) => r2(a.byBucket.get(k) ?? 0)).join(' / ');
+    out.push(`${monthName(m)}${m === thisMonth ? ' (current, until ' + today + ')' : ''} | ${r2(a.total)} | ${split} | ${a.count} | ${cats} | ${mem}`);
   }
 
   out.push('\nSPENDING BY MEMBER AND CATEGORY (month | member | category | AED):');
@@ -135,10 +146,29 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
     out.push(`${name} | ${r2(Number(src.total))} | ${r2(spent)} | ${cats}`);
   }
 
-  out.push(`\nMONTHLY OBLIGATIONS (name | AED | due day | responsible | category | paid in ${monthName(thisMonth)}):`);
+  // Salaries (latest saved month on or before this one) and commitments
+  const salary = (id: string) =>
+    (incRes.data ?? []).filter((r) => r.user_id === id && r.month <= thisMonth).sort((a, b) => (a.month < b.month ? 1 : -1))[0];
+  const salaries = [...people.entries()]
+    .filter(([id]) => (profilesRes.data ?? []).find((p) => p.id === id)?.active)
+    .map(([id, name]) => `${name} ${r2(Number(salary(id)?.amount ?? 0))}`);
+  out.push(`\nMONTHLY SALARIES (AED): ${salaries.join('، ') || 'not set'}`);
+  const KIND: Record<string, string> = { rent: 'rent', school: 'school fees', bill: 'bill', transfer: 'transfer to family', saving: 'savings', installment: 'instalment', other: 'other' };
+  out.push(`\nCOMMITMENTS, taken off the salary before day-to-day spending (name | type | AED | how often | responsible | status in ${monthName(thisMonth)}):`);
   for (const f of fixed.filter((x) => x.active)) {
-    const paid = expenses.some((e) => e.fixed_id === f.id && e.spent_on.startsWith(thisMonth));
-    out.push(`${f.name} | ${r2(Number(f.amount))} | ${f.due_day} | ${who(f.owner_id)} | ${catName.get(f.category_id) ?? '?'} | ${paid ? 'paid' : 'not yet'}`);
+    const every = Number(f.every_months ?? 1);
+    let status: string;
+    if (every === 1) {
+      const paid = expenses.find((e) => e.fixed_id === f.id && e.spent_on.startsWith(thisMonth));
+      status = paid ? `paid ${r2(Number(paid.amount))}` : `not paid yet, due day ${f.due_day}${f.variable ? ' (amount varies, estimate)' : ''}`;
+    } else {
+      const schedule = (payRes.data ?? []).filter((p) => p.fixed_id === f.id);
+      const next = schedule.find((p) => !p.expense_id);
+      const reserved = (resRes.data ?? []).find((r) => r.fixed_id === f.id && r.month === thisMonth);
+      const list = schedule.map((p, i) => `${p.method === 'cheque' ? 'cheque' : 'payment'} ${i + 1} ${p.due_date} ${r2(Number(p.amount))}${p.reference ? ` #${p.reference}` : ''} ${p.expense_id ? 'paid' : 'pending'}`).join('; ');
+      status = `set aside ${r2(Number(f.amount) / every)} a month (${reserved ? 'done this month' : 'not yet this month'}); next ${next ? `${next.due_date} ${r2(Number(next.amount))}` : 'none scheduled'}; schedule: ${list || 'none'}`;
+    }
+    out.push(`${f.name} | ${KIND[f.kind] ?? f.kind} | ${r2(Number(f.amount))} | ${every === 1 ? 'monthly' : `every ${every} months`} | ${who(f.owner_id)} | ${status}`);
   }
 
   out.push('\nRECENT EXPENSES, LAST 45 DAYS (date | member | category | note | AED | items):');

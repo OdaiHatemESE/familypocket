@@ -81,6 +81,8 @@ ${lineRules(catalog.units)}
 - A QUESTION: a question or request about their spending, budgets, items, prices, obligations or saving advice.
   Answer from the FAMILY DATA below only. Never invent numbers; if the data does not hold the answer, say so plainly.
   Use the pre-computed totals; when you add several numbers, add them carefully. Name months in Arabic.
+  Day-to-day spending excludes commitments. "What is left to spend" = salaries − this month's commitments
+  (the monthly set-aside for those paid every few months) − day-to-day spending so far.
   receipt.lines must be empty.
 - ANYTHING ELSE: greetings and the like. Reply briefly and say what you can do: answer questions about their spending,
   or record a purchase they describe, e.g. "اشتريت 2 كيلو بندورة بـ 8 دراهم وكيس خبز بـ 3". receipt.lines must be empty.

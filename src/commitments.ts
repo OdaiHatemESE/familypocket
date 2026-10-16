@@ -54,7 +54,7 @@ export type CommitmentState = {
   paidExpense: Expense | null; // monthly: the payment recorded this month
   reserve: ReserveRow | null; // reserve: this month's set-aside
   share: number; // reserve: the suggested monthly set-aside
-  fund: number; // reserve: set aside so far minus paid out
+  fund: number; // reserve: set aside towards the next payment
   duePayments: DuePayment[]; // reserve: scheduled payments falling in this month
   nextPayment: CommitmentPayment | null; // reserve: the next unpaid payment
 };
@@ -104,8 +104,11 @@ export function monthCommitments(
       const nextPayment = schedule.find((p) => !p.expenseId && p.dueDate >= `${month}-01`) ?? schedule.find((p) => !p.expenseId) ?? null;
       const share = round2((nextPayment?.amount ?? f.amount) / f.everyMonths);
       const reserve = reserves.find((r) => r.fixedId === f.id && r.month === month) ?? null;
-      const setAside = reserves.filter((r) => r.fixedId === f.id).reduce((a, r) => a + r.amount, 0);
-      const paidOut = schedule.filter((p) => p.expenseId).reduce((a, p) => a + p.amount, 0);
+      // The piggy bank holds what was set aside since the last payment went out (from that payment's month on),
+      // so a payment made before any setting aside never shows as a debt
+      const lastPaid = [...schedule].reverse().find((p) => p.expenseId);
+      const since = lastPaid ? lastPaid.dueDate.slice(0, 7) : '';
+      const setAside = reserves.filter((r) => r.fixedId === f.id && r.month >= since).reduce((a, r) => a + r.amount, 0);
       const duePayments = schedule
         .map((p, i) => ({ payment: p, index: i + 1, count: schedule.length, paid: !!p.expenseId, overdue: !p.expenseId && p.dueDate < todayKey }))
         .filter((d) => d.payment.dueDate.startsWith(month));
@@ -115,7 +118,7 @@ export function monthCommitments(
         done: !!reserve,
         overdue: duePayments.some((d) => d.overdue),
         dueDate: null, paidExpense: null, reserve, share,
-        fund: round2(setAside - paidOut), duePayments, nextPayment,
+        fund: round2(setAside), duePayments, nextPayment,
       };
     })
     .sort((a, b) => Number(a.done) - Number(b.done) || Number(b.overdue) - Number(a.overdue) || order(a) - order(b));

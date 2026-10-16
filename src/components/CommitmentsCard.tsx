@@ -31,7 +31,7 @@ export function CommitmentsCard({ month, mc, income, spent }: { month: string; m
       await fn();
     } catch (e) {
       const msg = (e as Error).message;
-      setError(/duplicate|23505|مكرر/i.test(msg) ? 'هالالتزام مسجّل كمدفوع هالشهر من قبل.' : msg);
+      setError(/duplicate|23505|مسجّل من قبل/i.test(msg) ? 'هالالتزام مسجّل كمدفوع هالشهر من قبل.' : msg);
     }
     setBusy(null);
   };
@@ -226,7 +226,7 @@ function PayAmountSheet({ fixed, onClose, onPay }: { fixed: FixedExpense; onClos
       onClose();
     } catch (e) {
       const msg = (e as Error).message;
-      setError(/duplicate|23505|مكرر/i.test(msg) ? 'هالالتزام مسجّل كمدفوع هالشهر من قبل.' : msg);
+      setError(/duplicate|23505|مسجّل من قبل/i.test(msg) ? 'هالالتزام مسجّل كمدفوع هالشهر من قبل.' : msg);
       setBusy(false);
     }
   };
