@@ -1,6 +1,7 @@
 // End-to-end check of accounts, family sharing and row-level security against the live Supabase project.
 // Creates throwaway "qa_" accounts in two separate QA families.
 import { createClient } from '@supabase/supabase-js';
+import { readFileSync } from 'node:fs';
 
 const URL = process.env.SUPABASE_URL ?? 'https://eypcyrthilqohmawirly.supabase.co';
 const KEY = process.env.SUPABASE_KEY ?? 'sb_publishable_fa_TJ1Ym4n5ZxEeVIR5aiA_b9V-ID6T';
@@ -127,6 +128,45 @@ const otherItems = await other.from('items').select('id').eq('category_id', catI
 ok((otherItems.data?.length ?? 0) === 0, "another family cannot read this family's items");
 const replace = await b.from('expense_items').delete().eq('expense_id', receipt.data.id).select();
 ok(replace.data?.length === 2, 'member replaces their receipt lines when editing');
+
+// 5d. Learned receipt names and the receipt reader
+const al = await b.from('item_aliases').upsert({ alias: 'qa fairy lemon 750ml', item_id: item.data.id }, { onConflict: 'household_id,alias' }).select();
+ok(al.data?.length === 1, 'member saves a learned receipt name', al.error?.message);
+const otherAlias = await other.from('item_aliases').select('alias').eq('alias', 'qa fairy lemon 750ml');
+ok((otherAlias.data?.length ?? 0) === 0, "another family cannot read this family's learned names");
+const otherAliasWrite = await other.from('item_aliases').insert({ alias: 'qa hijack', item_id: item.data.id });
+ok(!!otherAliasWrite.error, "another family cannot point a name at this family's item");
+const fakeScanLog = await b.from('receipt_scans').delete().eq('household_id', hh).select();
+ok((fakeScanLog.data?.length ?? 0) === 0, 'scan history cannot be deleted to dodge the daily limit');
+
+const noAuth = await fetch(`${URL}/functions/v1/scan-receipt`, { method: 'POST', headers: { apikey: KEY, 'Content-Type': 'application/json' }, body: '{}' });
+ok(noAuth.status === 401, 'receipt reader refuses requests without sign-in', String(noAuth.status));
+
+const photo = readFileSync(new URL('./fixtures/receipt-carrefour.jpg', import.meta.url)).toString('base64');
+const t0 = Date.now();
+const scan = await b.functions.invoke('scan-receipt', { body: { image: photo, mimeType: 'image/jpeg' } });
+const ms = Date.now() - t0;
+let scanBody = scan.data;
+if (scan.error) {
+  try { scanBody = await scan.error.context.json(); } catch { scanBody = { error: String(scan.error) }; }
+}
+if (scanBody?.error === 'NOT_CONFIGURED') {
+  console.log('SKIP  receipt reading: GEMINI_API_KEY not set yet');
+} else {
+  ok(!scan.error && Array.isArray(scanBody?.lines), 'receipt photo is read', `${scanBody?.error ?? ''} ${scanBody?.message ?? ''}`.trim());
+  if (Array.isArray(scanBody?.lines)) {
+    console.log(`      provider=${scanBody.provider} model=${scanBody.model} time=${ms}ms store=${scanBody.store} date=${scanBody.date} total=${scanBody.total} linesTotal=${scanBody.linesTotal}`);
+    for (const l of scanBody.lines) console.log(`      - ${l.raw} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.learned ? ' (learned)' : ''}${l.uncertain ? ' (check)' : ''}`);
+    for (const w of scanBody.warnings ?? []) console.log(`      ! ${w}`);
+    ok(scanBody.lines.length === 5, 'all 5 products found, discount and VAT not listed as items', String(scanBody.lines.length));
+    ok(Math.abs((scanBody.linesTotal ?? 0) - 91.39) < 0.02, 'lines add up to the amount paid (VAT spread)', String(scanBody.linesTotal));
+    ok(scanBody.date === '2026-10-14', 'receipt date read', String(scanBody.date));
+    const soap = scanBody.lines.find((l) => /fairy/i.test(l.raw));
+    ok(soap?.itemId === item.data.id && soap?.quantity === 2, "known item matched to the family's item with quantity 2", JSON.stringify(soap));
+    const chicken = scanBody.lines.find((l) => /chicken/i.test(l.raw));
+    ok(chicken && Math.abs(chicken.quantity - 1.25) < 0.01 && chicken.unit === 'كيلو', 'weighed item read as 1.25 كيلو', JSON.stringify(chicken));
+  }
+}
 
 // 6. Owner-only actions
 const bTry = await b.rpc('set_member_password', { p_user: (await a.auth.getUser()).data.user.id, p_password: 'hacked123' });

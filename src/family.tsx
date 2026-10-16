@@ -3,6 +3,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { loginEmail } from './lib/config';
 import { friendlyError, supabase } from './lib/supabase';
 import { resolveAll } from './budgets';
+import { normalizeAlias } from '../supabase/functions/scan-receipt/alias';
 import { BudgetRow, Category, CategoryBudgetRow, Expense, ExpenseLine, FixedExpense, Household, Item, Member, MemberBudget } from './types';
 import { monthKey, shiftMonth } from './utils';
 
@@ -12,6 +13,29 @@ type CategoryInput = Omit<Category, 'id' | 'sort'> & { id?: string };
 type FixedInput = Omit<FixedExpense, 'id'> & { id?: string };
 type ExpenseInput = { amount: number; note: string; categoryId: string; date: string; fixedId?: string | null; lines?: ExpenseLine[] };
 type ItemInput = { id?: string; categoryId: string; name: string; unit: string };
+
+export type ScanLine = {
+  raw: string;
+  itemId: string | null;
+  name: string;
+  unit: string;
+  categoryId: string | null;
+  quantity: number;
+  amount: number;
+  isNew: boolean;
+  uncertain: boolean;
+  learned: boolean;
+};
+export type ScanDraft = {
+  store: string | null;
+  date: string | null;
+  total: number | null;
+  linesTotal: number;
+  lines: ScanLine[];
+  warnings: string[];
+  provider: string;
+  model: string;
+};
 
 type Ctx = {
   status: Status;
@@ -25,6 +49,10 @@ type Ctx = {
   /** Creates the item (or returns the existing one with the same name in that category) */
   saveItem: (i: ItemInput) => Promise<Item>;
   deleteItem: (id: string) => Promise<void>;
+  /** Sends a receipt photo to the server and returns a draft to review */
+  scanReceipt: (photo: { base64: string; mimeType: string }) => Promise<ScanDraft>;
+  /** Remembers what a shop prints for each item, so the next receipt matches by itself */
+  learnAliases: (pairs: { raw: string; itemId: string }[]) => Promise<void>;
   budgetRows: BudgetRow[];
   categoryBudgetRows: CategoryBudgetRow[];
   /** Each active member's budget as it applies to `month` */
@@ -230,6 +258,33 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         const saved = toItem(data);
         setItems((xs) => [...xs.filter((x) => x.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name, 'ar')));
         return saved;
+      },
+      scanReceipt: async (photo) => {
+        const { data, error } = await supabase.functions.invoke('scan-receipt', { body: { image: photo.base64, mimeType: photo.mimeType } });
+        if (error) {
+          // The function answers with { error, message } in Arabic; fall back to a generic sentence
+          let message = '';
+          try {
+            const ctx = (error as { context?: Response }).context;
+            message = ctx ? (await ctx.json())?.message ?? '' : '';
+          } catch {
+            /* response was not JSON */
+          }
+          throw new Error(message || friendlyError(error));
+        }
+        return data as ScanDraft;
+      },
+      learnAliases: async (pairs) => {
+        const rows = new Map<string, string>();
+        for (const p of pairs) {
+          const alias = normalizeAlias(p.raw);
+          if (alias.length >= 2) rows.set(alias, p.itemId);
+        }
+        if (!rows.size) return;
+        // Best effort: a failure here must never block saving the receipt
+        await supabase
+          .from('item_aliases')
+          .upsert([...rows.entries()].map(([alias, item_id]) => ({ alias, item_id, updated_at: new Date().toISOString() })), { onConflict: 'household_id,alias' });
       },
       deleteItem: async (id) => {
         check(await supabase.from('items').delete().eq('id', id));

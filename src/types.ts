@@ -42,6 +42,10 @@ export type Item = { id: string; categoryId: string; name: string; unit: string;
 /** One line on a receipt */
 export type ExpenseLine = {
   id?: string;
+  /** Text printed on the receipt, when the line came from a photo (not stored on the line) */
+  raw?: string;
+  /** Read from a photo and not checked yet */
+  uncertain?: boolean;
   itemId: string | null;
   categoryId: string;
   name: string;

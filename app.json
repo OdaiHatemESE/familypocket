@@ -28,7 +28,14 @@
     },
     "plugins": [
       "expo-font",
-      "expo-router"
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "التطبيق بيحتاج الوصول للصور عشان تختار صورة الفاتورة.",
+          "cameraPermission": "التطبيق بيحتاج الكاميرا عشان تصوّر الفاتورة."
+        }
+      ]
     ],
     "scheme": "familypocket",
     "experiments": {

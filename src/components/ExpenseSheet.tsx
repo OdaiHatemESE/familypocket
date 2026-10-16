@@ -1,10 +1,11 @@
 import * as Haptics from 'expo-haptics';
 import React, { useMemo, useState } from 'react';
-import { Platform, Pressable, TextInput, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, TextInput, View } from 'react-native';
 import { qtyLabel } from '../budgets';
 import { useFamily } from '../family';
+import { pickReceiptPhoto } from '../lib/receiptPhoto';
 import { C, F, TS } from '../theme';
-import { Expense, ExpenseLine, Item } from '../types';
+import { Expense, ExpenseLine, Item, UNITS } from '../types';
 import { Avatar, CatTile, ErrorText, HScroll, Icon, Money, PrimaryButton, Row, T } from '../ui';
 import { dayLabel, num, parseAmount, shortDay, toKey } from '../utils';
 import { CategoryPicker, UnitPicker } from './ItemSheet';
@@ -44,10 +45,10 @@ export function ExpenseSheet(props: Props) {
 }
 
 type View_ = 'main' | 'pick' | 'line';
-type Draft = { index: number | null; itemId: string | null; name: string; unit: string; categoryId: string; qty: string; amount: string };
+type Draft = { index: number | null; itemId: string | null; name: string; unit: string; categoryId: string; qty: string; amount: string; raw?: string };
 
 function ExpenseForm({ visible, onClose, editing }: Props) {
-  const { categories, items, expenses, me, memberOf, addExpense, updateExpense, deleteExpense, saveItem } = useFamily();
+  const { categories, items, expenses, me, memberOf, addExpense, updateExpense, deleteExpense, saveItem, scanReceipt, learnAliases } = useFamily();
   const readOnly = !!editing && editing.userId !== me?.id;
   const [mode, setMode] = useState<'amount' | 'receipt'>(editing?.lines.length ? 'receipt' : 'amount');
   const [view, setView] = useState<View_>('main');
@@ -64,9 +65,14 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
   const [query, setQuery] = useState('');
   const [newItem, setNewItem] = useState<{ categoryId: string; unit: string } | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  // receipt photo reading
+  const [scanning, setScanning] = useState(false);
+  const [scanNotes, setScanNotes] = useState<string[]>([]);
+  const [relinking, setRelinking] = useState<Draft | null>(null); // a line waiting for a different item
 
   const days = lastDays(14);
   if (editing && !days.includes(editing.date)) days.push(editing.date);
+  if (!days.includes(date)) days.push(date);
   const linesTotal = lines.reduce((a, l) => a + l.amount, 0);
   const catOf = (id: string) => categories.find((c) => c.id === id);
 
@@ -100,13 +106,11 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
 
   const save = async () => {
     let data;
+    let finalLines: ExpenseLine[] = [];
     if (mode === 'receipt') {
       if (!lines.length) return setError('أضف صنف واحد على الأقل للفاتورة');
-      // The receipt's main category is the one with the largest share
-      const byCat = new Map<string, number>();
-      lines.forEach((l) => byCat.set(l.categoryId, (byCat.get(l.categoryId) ?? 0) + l.amount));
-      const mainCat = [...byCat.entries()].sort((a, b) => b[1] - a[1])[0][0];
-      data = { amount: Math.round(linesTotal * 100) / 100, note: note.trim(), categoryId: mainCat, date, fixedId: editing?.fixedId ?? null, lines };
+      const noCat = lines.findIndex((l) => !l.categoryId);
+      if (noCat >= 0) return setError(`اختر تصنيف «${lines[noCat].name}» قبل الحفظ`);
     } else {
       const n = parseFloat(amount);
       if (!(n > 0)) return setError('اكتب المبلغ أولاً');
@@ -115,14 +119,66 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
     }
     setBusy(true);
     try {
-      if (editing) await updateExpense(editing.id, data);
-      else await addExpense(data);
+      if (mode === 'receipt') {
+        // Lines read from a photo may name items the family doesn't have yet: add them first
+        finalLines = [];
+        for (const l of lines) {
+          if (l.itemId) finalLines.push(l);
+          else {
+            const it = await saveItem({ name: l.name, categoryId: l.categoryId, unit: l.unit });
+            finalLines.push({ ...l, itemId: it.id });
+          }
+        }
+        const total = finalLines.reduce((a, l) => a + l.amount, 0);
+        // The receipt's main category is the one with the largest share
+        const byCat = new Map<string, number>();
+        finalLines.forEach((l) => byCat.set(l.categoryId, (byCat.get(l.categoryId) ?? 0) + l.amount));
+        const mainCat = [...byCat.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        data = { amount: Math.round(total * 100) / 100, note: note.trim(), categoryId: mainCat, date, fixedId: editing?.fixedId ?? null, lines: finalLines };
+      }
+      if (editing) await updateExpense(editing.id, data!);
+      else await addExpense(data!);
+      const learned = finalLines.filter((l) => l.raw && l.itemId).map((l) => ({ raw: l.raw!, itemId: l.itemId! }));
+      if (learned.length) learnAliases(learned).catch(() => {});
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       onClose();
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
     }
+  };
+
+  const scan = async (source: 'camera' | 'library') => {
+    setError('');
+    let photo;
+    try {
+      photo = await pickReceiptPhoto(source);
+    } catch (e) {
+      return setError((e as Error).message);
+    }
+    if (!photo) return;
+    setScanning(true);
+    try {
+      const d = await scanReceipt(photo);
+      const read: ExpenseLine[] = d.lines.map((l) => ({
+        itemId: l.itemId,
+        name: l.name,
+        unit: l.unit,
+        categoryId: l.categoryId ?? '',
+        quantity: l.quantity,
+        amount: l.amount,
+        raw: l.raw,
+        uncertain: l.uncertain,
+      }));
+      setLines((ls) => [...ls, ...read]);
+      if (d.store && !note.trim()) setNote(d.store);
+      if (d.date) setDate(d.date);
+      setScanNotes(d.warnings);
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    setScanning(false);
   };
 
   const remove = async () => {
@@ -169,6 +225,13 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
       .sort((a, b) => (usage.count.get(b.id) ?? 0) - (usage.count.get(a.id) ?? 0) || a.name.localeCompare(b.name, 'ar'));
     const exact = items.some((i) => i.name === q);
     const startLine = (it: Item) => {
+      if (relinking) {
+        // Keep what was read from the receipt (quantity, price, printed text); swap the item
+        setDraft({ ...relinking, itemId: it.id, name: it.name, unit: it.unit, categoryId: it.categoryId });
+        setRelinking(null);
+        setView('line');
+        return;
+      }
       const last = usage.last.get(it.id);
       setDraft({ index: null, itemId: it.id, name: it.name, unit: it.unit, categoryId: it.categoryId, qty: '1', amount: last ? String(Math.round(last.price * 100) / 100) : '' });
       setView('line');
@@ -191,12 +254,23 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
       <Sheet
         visible={visible}
         onClose={onClose}
-        title="اختر صنف"
+        title={relinking ? `بدّل «${relinking.name}» بصنف موجود` : 'اختر صنف'}
         footer={
           <View>
             <ErrorText text={error} />
-            <Pressable onPress={() => (setView('main'), setNewItem(null), setError(''))} style={{ paddingVertical: 12 }}>
-              <T w="medium" color={C.oasis} align="center">رجوع للفاتورة</T>
+            <Pressable
+              onPress={() => {
+                setNewItem(null);
+                setError('');
+                if (relinking) {
+                  setDraft(relinking);
+                  setRelinking(null);
+                  setView('line');
+                } else setView('main');
+              }}
+              style={{ paddingVertical: 12 }}
+            >
+              <T w="medium" color={C.oasis} align="center">{relinking ? 'رجوع للسطر' : 'رجوع للفاتورة'}</T>
             </Pressable>
           </View>
         }
@@ -277,7 +351,12 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
     const commit = () => {
       if (!(qty > 0)) return setError('اكتب الكمية');
       if (!(amt >= 0) || !draft.amount.trim()) return setError('اكتب السعر الإجمالي لهذا الصنف');
-      const line: ExpenseLine = { itemId: draft.itemId, name: draft.name, unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt };
+      if (!draft.itemId && !draft.name.trim()) return setError('اكتب اسم الصنف');
+      if (!draft.categoryId) return setError('اختر تصنيف الصنف');
+      const line: ExpenseLine = {
+        itemId: draft.itemId, name: draft.name.trim(), unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt,
+        raw: draft.raw, uncertain: false,
+      };
       setLines((ls) => (draft.index === null ? [...ls, line] : ls.map((l, i) => (i === draft.index ? { ...l, ...line } : l))));
       setDraft(null);
       setQuery('');
@@ -288,7 +367,7 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
       <Sheet
         visible={visible}
         onClose={onClose}
-        title={draft.name}
+        title={draft.itemId ? draft.name : draft.index === null ? 'صنف جديد' : draft.name || 'صنف جديد'}
         footer={
           <View>
             <ErrorText text={error} />
@@ -310,10 +389,40 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
           </View>
         }
       >
-        <Row style={{ gap: 10, marginTop: 2 }}>
-          <CatTile icon={cat?.icon ?? 'tag'} color={cat?.color ?? C.faint} size={36} />
-          <T size={TS.small} color={C.sub} style={{ flex: 1 }}>{cat?.name}، بالـ{draft.unit}</T>
-        </Row>
+        {!!draft.raw && (
+          <View style={{ backgroundColor: C.paper, borderRadius: 12, padding: 10, marginTop: 2 }}>
+            <T size={TS.tiny} color={C.sub}>مكتوب بالفاتورة</T>
+            <T size={TS.small} style={{ writingDirection: 'ltr', textAlign: 'left' }}>{draft.raw}</T>
+          </View>
+        )}
+        {draft.itemId ? (
+          <Row style={{ gap: 10, marginTop: 10 }}>
+            <CatTile icon={cat?.icon ?? 'tag'} color={cat?.color ?? C.faint} size={36} />
+            <T size={TS.small} color={C.sub} style={{ flex: 1 }}>{cat?.name}، بالـ{draft.unit}</T>
+            {!!draft.raw && (
+              <Pressable onPress={() => (setRelinking(draft), setQuery(''), setError(''), setView('pick'))} hitSlop={8}>
+                <T size={TS.small} w="medium" color={C.oasis}>غيّر الصنف</T>
+              </Pressable>
+            )}
+          </Row>
+        ) : (
+          <View style={{ marginTop: 10 }}>
+            <Row style={{ justifyContent: 'space-between' }}>
+              <View style={{ backgroundColor: C.oasis + '18', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 }}>
+                <T size={TS.tiny} w="semibold" color={C.oasis}>صنف جديد، بينضاف لأصنافكم عند الحفظ</T>
+              </View>
+              <Pressable onPress={() => (setRelinking(draft), setQuery(''), setError(''), setView('pick'))} hitSlop={8}>
+                <T size={TS.small} w="medium" color={C.oasis}>اربطه بصنف موجود</T>
+              </Pressable>
+            </Row>
+            <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 14, marginBottom: 8 }}>اسم الصنف</T>
+            <TextInput value={draft.name} onChangeText={(t) => setDraft({ ...draft, name: t })} style={inputStyle} />
+            <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 14, marginBottom: 8 }}>بينباع بالـ</T>
+            <UnitPicker value={draft.unit} onChange={(u) => setDraft({ ...draft, unit: u })} />
+            <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 14, marginBottom: 8 }}>التصنيف</T>
+            <CategoryPicker value={draft.categoryId} onChange={(id) => setDraft({ ...draft, categoryId: id })} />
+          </View>
+        )}
 
         <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 18, marginBottom: 8 }}>الكمية</T>
         <Row style={{ gap: 10 }}>
@@ -451,6 +560,51 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
         </>
       ) : (
         <>
+          <View style={{ flexDirection: 'row-reverse', gap: 8, marginTop: 12 }}>
+            <Pressable
+              onPress={() => scan('camera')}
+              disabled={scanning}
+              accessibilityRole="button"
+              style={({ pressed }) => ({
+                flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8,
+                paddingVertical: 13, borderRadius: 14, backgroundColor: C.ink, opacity: pressed || scanning ? 0.8 : 1,
+              })}
+            >
+              <Icon name="camera-outline" size={20} color="#fff" />
+              <T w="semibold" color="#fff">صوّر الفاتورة</T>
+            </Pressable>
+            <Pressable
+              onPress={() => scan('library')}
+              disabled={scanning}
+              accessibilityRole="button"
+              style={({ pressed }) => ({
+                flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6,
+                paddingVertical: 13, paddingHorizontal: 16, borderRadius: 14, backgroundColor: C.paper, opacity: pressed || scanning ? 0.7 : 1,
+              })}
+            >
+              <Icon name="image-outline" size={20} color={C.ink} />
+              <T w="medium">من الصور</T>
+            </Pressable>
+          </View>
+
+          {scanning && (
+            <Row style={{ gap: 10, backgroundColor: C.paper, borderRadius: 14, padding: 14, marginTop: 10 }}>
+              <ActivityIndicator color={C.oasis} />
+              <T size={TS.small} color={C.sub} style={{ flex: 1 }}>جاري قراءة الفاتورة، بتاخد كم ثانية…</T>
+            </Row>
+          )}
+
+          {scanNotes.length > 0 && !scanning && (
+            <View style={{ backgroundColor: C.saffron + '14', borderRadius: 14, padding: 12, marginTop: 10, gap: 4 }}>
+              {scanNotes.map((n, i) => (
+                <Row key={i} style={{ gap: 6, alignItems: 'flex-start' }}>
+                  <Icon name="information-outline" size={16} color={C.saffron} />
+                  <T size={TS.small} style={{ flex: 1 }}>{n}</T>
+                </Row>
+              ))}
+            </View>
+          )}
+
           <View style={{ alignItems: 'center', paddingTop: 12, paddingBottom: 6 }}>
             <T size={TS.small} color={C.sub} align="center">مجموع الفاتورة</T>
             <Money value={linesTotal} size={40} w="bold" decimals />
@@ -460,7 +614,7 @@ function ExpenseForm({ visible, onClose, editing }: Props) {
               lines={lines}
               onPress={(i) => {
                 const l = lines[i];
-                setDraft({ index: i, itemId: l.itemId, name: l.name, unit: l.unit, categoryId: l.categoryId, qty: String(l.quantity), amount: String(l.amount) });
+                setDraft({ index: i, itemId: l.itemId, name: l.name, unit: UNITS.includes(l.unit as (typeof UNITS)[number]) ? l.unit : 'حبة', categoryId: l.categoryId, qty: String(l.quantity), amount: String(l.amount), raw: l.raw });
                 setView('line');
               }}
             />
@@ -515,12 +669,26 @@ function LinesList({ lines, onPress }: { lines: ExpenseLine[]; onPress?: (i: num
           key={`${l.itemId ?? l.name}-${i}`}
           onPress={onPress ? () => onPress(i) : undefined}
           disabled={!onPress}
-          style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderTopWidth: i ? 1 : 0, borderColor: C.line }}
+          style={{
+            flexDirection: 'row-reverse', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderTopWidth: i ? 1 : 0, borderColor: C.line,
+            borderRightWidth: onPress && (l.uncertain || !l.categoryId) ? 3 : 0, borderRightColor: C.saffron,
+          }}
         >
           <View style={{ flex: 1 }}>
-            <T w="medium">{l.name}</T>
-            <T size={TS.tiny} color={C.sub}>
-              {qtyLabel(l.quantity, l.unit)}{l.quantity > 0 ? `، ${num(l.amount / l.quantity)} للـ${l.unit}` : ''}
+            <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 6 }}>
+              <T w="medium" style={{ flexShrink: 1 }} numberOfLines={1}>{l.name}</T>
+              {onPress && !l.itemId && (
+                <View style={{ backgroundColor: C.oasis + '18', borderRadius: 999, paddingHorizontal: 7, paddingVertical: 1 }}>
+                  <T size={TS.tiny} w="semibold" color={C.oasis}>جديد</T>
+                </View>
+              )}
+            </View>
+            <T size={TS.tiny} color={onPress && (l.uncertain || !l.categoryId) ? C.saffron : C.sub}>
+              {onPress && !l.categoryId
+                ? 'اختر التصنيف'
+                : onPress && l.uncertain
+                  ? 'راجع هذا السطر'
+                  : `${qtyLabel(l.quantity, l.unit)}${l.quantity > 0 ? `، ${num(l.amount / l.quantity)} للـ${l.unit}` : ''}`}
             </T>
           </View>
           <Money value={l.amount} decimals />
