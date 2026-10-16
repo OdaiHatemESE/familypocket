@@ -80,7 +80,7 @@ function DayStrip({ a }: { a: MonthAnalysis }) {
   );
 }
 
-export function Hero({ a, onPrev, onNext }: { a: MonthAnalysis; onPrev: () => void; onNext: () => void }) {
+export function Hero({ a, pendingCommitments, onPrev, onNext }: { a: MonthAnalysis; pendingCommitments: number; onPrev: () => void; onNext: () => void }) {
   const insets = useSafeAreaInsets();
   const shown = useCounter(a.totalSpent);
   const solo = !!a.scope;
@@ -89,7 +89,8 @@ export function Hero({ a, onPrev, onNext }: { a: MonthAnalysis; onPrev: () => vo
   const pct = a.hasBudget ? a.totalSpent / a.totalBudget : 0;
   const barColor = over ? C.pomLight : pct > 0.85 ? C.saffronLight : C.oasisLight;
 
-  const label = a.isCurrent ? (solo ? 'صرفت هذا الشهر' : 'صرفنا هذا الشهر') : `مجموع صرف ${monthName(a.month)}`;
+  // Day-to-day spending only; commitments are counted on the salary card
+  const label = a.isCurrent ? (solo ? 'مصروفي هذا الشهر' : 'مصروفنا هذا الشهر') : `مصروف ${monthName(a.month)}`;
 
   return (
     <View
@@ -156,7 +157,7 @@ export function Hero({ a, onPrev, onNext }: { a: MonthAnalysis; onPrev: () => vo
         )}
         <Figure label="متوسط اليوم" value={a.dailyAvg} />
         <View style={{ width: 1, alignSelf: 'stretch', backgroundColor: C.inkSoft }} />
-        <Figure label="إجباري لسه ما انتدفع" value={a.pendingFixed} color={a.pendingFixed ? C.saffronLight : '#fff'} />
+        <Figure label="التزامات باقية" value={pendingCommitments} color={pendingCommitments ? C.saffronLight : '#fff'} />
       </Row>
     </View>
   );

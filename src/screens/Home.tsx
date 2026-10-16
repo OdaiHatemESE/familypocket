@@ -1,14 +1,16 @@
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { analyzeMonth, Insight } from '../analysis';
 import { ExpenseRow } from '../components/ExpenseRow';
+import { CommitmentsCard } from '../components/CommitmentsCard';
 import { Hero } from '../components/Hero';
+import { monthCommitments } from '../commitments';
 import { useFamily } from '../family';
 import { useTabs } from '../tabsContext';
 import { C, TS } from '../theme';
 import { Avatar, Bar, Card, CatTile, Icon, IconName, Money, PrimaryButton, Row, SectionHead, T } from '../ui';
-import { num, shiftMonth, todayKey } from '../utils';
+import { num, shiftMonth } from '../utils';
 import { expenseOwner } from '../budgets';
 
 export const toneStyle: Record<Insight['tone'], { color: string; icon: IconName }> = {
@@ -34,10 +36,8 @@ export function InsightList({ items }: { items: Insight[] }) {
 }
 
 export function Home() {
-  const { categories, expenses, fixed, members, memberOf, markFixedPaid, refresh, budgetsFor } = useFamily();
+  const { categories, expenses, fixed, members, memberOf, refresh, budgetsFor, payments, reserves, incomesFor } = useFamily();
   const { month, setMonth, openAdd, openExpense, scope } = useTabs();
-  const [paying, setPaying] = useState<string | null>(null);
-  const [payError, setPayError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const budgets = useMemo(() => budgetsFor(month), [budgetsFor, month]);
   const a = useMemo(
@@ -50,22 +50,9 @@ export function Home() {
   );
   const catOf = (id: string) => categories.find((c) => c.id === id);
   const family = members.length > 1;
-  const paidCount = a.fixedStatus.filter((s) => s.paid).length;
-
-  const pay = async (fixedId: string) => {
-    const f = fixed.find((x) => x.id === fixedId);
-    if (!f) return;
-    setPaying(fixedId);
-    setPayError('');
-    try {
-      // Paid today if this is the current month, otherwise on its due date in the viewed month
-      const s = a.fixedStatus.find((x) => x.fixed.id === fixedId)!;
-      await markFixedPaid(f, a.isCurrent ? todayKey() : s.dueDate);
-    } catch (e) {
-      setPayError((e as Error).message);
-    }
-    setPaying(null);
-  };
+  const mc = useMemo(() => monthCommitments(month, fixed, payments, reserves, expenses, scope), [month, fixed, payments, reserves, expenses, scope]);
+  const incomes = useMemo(() => incomesFor(month), [incomesFor, month]);
+  const income = scope ? incomes[scope] ?? 0 : Object.values(incomes).reduce((x, y) => x + y, 0);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -79,7 +66,7 @@ export function Home() {
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.inkMuted} />}
     >
-      <Hero a={a} onPrev={() => setMonth(shiftMonth(month, -1))} onNext={() => setMonth(shiftMonth(month, 1))} />
+      <Hero a={a} pendingCommitments={mc.pendingAmount} onPrev={() => setMonth(shiftMonth(month, -1))} onNext={() => setMonth(shiftMonth(month, 1))} />
 
       <View style={{ paddingHorizontal: 16 }}>
         <Pressable
@@ -124,55 +111,8 @@ export function Home() {
               </>
             )}
 
-            {a.fixedStatus.length > 0 && (
-              <>
-                <SectionHead title="المصاريف الإجبارية" action="إدارة" onAction={() => router.push('/settings/fixed')} />
-                <Card>
-                  <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 }}>
-                    <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                      <T size={TS.small} color={C.sub}>انتدفع {paidCount} من {a.fixedStatus.length}</T>
-                      {a.pendingFixed > 0 ? (
-                        <T size={TS.small} color={C.sub}>باقي {num(a.pendingFixed)} درهم</T>
-                      ) : (
-                        <T size={TS.small} w="semibold" color={C.oasis}>كلها مدفوعة</T>
-                      )}
-                    </Row>
-                    <Bar pct={a.fixedStatus.length ? paidCount / a.fixedStatus.length : 0} color={C.oasis} />
-                  </View>
-                  {a.fixedStatus.map((s, i) => {
-                    const cat = catOf(s.fixed.categoryId);
-                    const busy = paying === s.fixed.id;
-                    return (
-                      <Row key={s.fixed.id} style={{ paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: i ? 1 : 0, borderColor: C.line }}>
-                        <CatTile icon={cat?.icon ?? 'calendar'} color={cat?.color ?? C.faint} size={38} />
-                        <View style={{ flex: 1, marginRight: 12 }}>
-                          <T w="medium" color={s.paid ? C.sub : C.text}>{s.fixed.name}</T>
-                          <T size={TS.small} color={s.overdue ? C.pom : C.sub}>
-                            {num(s.fixed.amount)} درهم، {s.paid ? 'مدفوع' : s.overdue ? `فات موعده يوم ${Number(s.dueDate.slice(8))}` : `يستحق يوم ${Number(s.dueDate.slice(8))}`}
-                          </T>
-                        </View>
-                        {s.paid ? (
-                          <Icon name="check-circle" size={26} color={C.oasis} />
-                        ) : (
-                          <Pressable
-                            onPress={() => pay(s.fixed.id)}
-                            disabled={!!paying}
-                            accessibilityLabel={`سجّل ${s.fixed.name} كمدفوع`}
-                            style={({ pressed }) => ({
-                              paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
-                              backgroundColor: s.overdue ? C.pom : C.ink, opacity: pressed ? 0.8 : 1, minWidth: 64, alignItems: 'center',
-                            })}
-                          >
-                            {busy ? <ActivityIndicator color="#fff" size="small" /> : <T w="semibold" size={TS.small} color="#fff" align="center">دفعت</T>}
-                          </Pressable>
-                        )}
-                      </Row>
-                    );
-                  })}
-                </Card>
-                {!!payError && <T size={TS.small} color={C.pom} style={{ marginTop: 8 }}>{payError}</T>}
-              </>
-            )}
+            <SectionHead title="الراتب والالتزامات" action="إدارة" onAction={() => router.push('/settings/fixed')} />
+            <CommitmentsCard month={month} mc={mc} income={income} spent={a.totalSpent} />
 
             {family && !scope && (a.totalSpent > 0 || a.hasBudget) && (
               <>

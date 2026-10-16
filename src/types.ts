@@ -56,16 +56,42 @@ export type ExpenseLine = {
   amount: number; // line total
 };
 
-/** A recurring monthly obligation: rent, school instalment, utilities… */
+export type CommitmentKind = 'rent' | 'school' | 'bill' | 'transfer' | 'saving' | 'installment' | 'other';
+
+/**
+ * A commitment that comes off the salary before day-to-day spending: rent, school fees, bills,
+ * transfers to family, savings. Monthly ones are paid each month; the rest are paid every few months
+ * from money set aside monthly (see CommitmentPayment and ReserveRow).
+ */
 export type FixedExpense = {
   id: string;
   name: string;
   categoryId: string;
-  amount: number;
-  dueDay: number; // 1..31
+  amount: number; // per payment (monthly amount when everyMonths = 1); an estimate when `variable`
+  dueDay: number; // 1..31, for monthly commitments
   active: boolean;
-  ownerId: string | null; // whose budget it is charged to
+  ownerId: string | null; // the member responsible
+  kind: CommitmentKind;
+  everyMonths: number; // 1, 2, 3, 4, 6 or 12
+  variable: boolean; // amount changes each time (electricity, water)
 };
+
+/** One scheduled payment of a commitment paid every few months: a rent cheque, a school instalment */
+export type CommitmentPayment = {
+  id: string;
+  fixedId: string;
+  dueDate: string; // YYYY-MM-DD
+  amount: number;
+  method: 'cheque' | 'transfer' | 'card' | 'cash';
+  reference: string; // cheque number, bank
+  expenseId: string | null; // set once paid / cashed
+};
+
+/** Money set aside in a month towards a commitment paid every few months */
+export type ReserveRow = { fixedId: string; month: string; amount: number };
+
+/** A member's salary from a month onwards */
+export type IncomeRow = { userId: string; month: string; amount: number };
 
 /** A member's saved budget for one month */
 export type BudgetRow = { userId: string; month: string; total: number };

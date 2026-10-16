@@ -224,6 +224,39 @@ if (q1?.error !== 'NOT_CONFIGURED') {
   ok(short?.kind === 'receipt' && chick?.quantity === 3 && chick?.amount === 60, 'short follow-up "دجاج ٣ ٦٠ درهم" becomes 3 for 60', JSON.stringify(short?.draft?.lines ?? short));
 }
 
+// 5d2. Commitments: salary, rent cheques every two months, monthly set-asides
+const rentC = await b.from('fixed_expenses').insert({ name: 'QA rent cheques', amount: 12000, due_day: 1, category_id: catId, kind: 'rent', every_months: 2 }).select().single();
+ok(!rentC.error && rentC.data.kind === 'rent' && rentC.data.every_months === 2, 'member adds a rent paid every two months', rentC.error?.message);
+const badEvery = await b.from('fixed_expenses').insert({ name: 'QA bad', amount: 1, due_day: 1, category_id: catId, every_months: 5 });
+ok(!!badEvery.error, 'commitment frequency limited to 1, 2, 3, 4, 6 or 12 months');
+const cheques = await b.from('commitment_payments').insert([
+  { fixed_id: rentC.data.id, due_date: `${month}-01`, amount: 12000, method: 'cheque', reference: '000123' },
+  { fixed_id: rentC.data.id, due_date: '2030-01-01', amount: 12000, method: 'cheque', reference: '000124' },
+]).select();
+ok(cheques.data?.length === 2, 'member records the rent cheques', cheques.error?.message);
+const aSeesCheques = await a.from('commitment_payments').select('id').eq('fixed_id', rentC.data.id);
+ok(aSeesCheques.data?.length === 2, 'family sees the cheques');
+const reserve = await a.from('commitment_reserves').upsert({ fixed_id: rentC.data.id, month, amount: 6000 }).select();
+ok(reserve.data?.length === 1, 'owner sets this month’s set-aside', reserve.error?.message);
+const cashed = await b.from('expenses').insert({ amount: 12000, note: 'QA rent', category_id: catId, spent_on: today, fixed_id: rentC.data.id }).select().single();
+const link = await b.from('commitment_payments').update({ expense_id: cashed.data?.id }).eq('id', cheques.data[0].id).select();
+ok(link.data?.[0]?.expense_id === cashed.data?.id, 'cashed cheque linked to its payment', link.error?.message ?? cashed.error?.message);
+const salary = await a.from('member_incomes').upsert({ user_id: bId, month, amount: 20000 }).select();
+ok(salary.data?.length === 1, "owner records a member's salary", salary.error?.message);
+let o = await other.from('commitment_payments').select('id').eq('fixed_id', rentC.data.id);
+ok((o.data?.length ?? 0) === 0, "another family cannot read this family's cheques");
+o = await other.from('commitment_payments').insert({ fixed_id: rentC.data.id, due_date: '2030-02-01', amount: 1 });
+ok(!!o.error, "another family cannot add cheques to this family's rent");
+o = await other.from('commitment_reserves').select('month').eq('fixed_id', rentC.data.id);
+ok((o.data?.length ?? 0) === 0, "another family cannot read this family's set-asides");
+o = await other.from('member_incomes').select('amount').eq('user_id', bId);
+ok((o.data?.length ?? 0) === 0, "another family cannot read this family's salaries");
+o = await other.from('member_incomes').insert({ user_id: bId, month, amount: 1 });
+ok(!!o.error, "another family cannot set this family's salaries");
+const otherFixed = await other.from('fixed_expenses').insert({ name: 'QA other', amount: 5, due_day: 1, category_id: (await other.from('categories').select('id').limit(1).single()).data.id }).select().single();
+o = await other.from('commitment_payments').insert({ fixed_id: otherFixed.data?.id, due_date: '2030-02-01', amount: 1, expense_id: cashed.data?.id });
+ok(!!o.error, "another family cannot link its payment to this family's expense");
+
 // 6. Owner-only actions
 const bTry = await b.rpc('set_member_password', { p_user: (await a.auth.getUser()).data.user.id, p_password: 'hacked123' });
 ok(bTry.error?.message === 'OWNER_ONLY', 'member cannot reset passwords', bTry.error?.message);

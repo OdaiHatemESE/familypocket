@@ -9,6 +9,7 @@ import { Icon, Money, Row, SectionHead, T } from '../ui';
 import { ScopeSwitch } from '../components/ScopeSwitch';
 import { ItemsAnalysis } from '../components/ItemsAnalysis';
 import { expenseOwner } from '../budgets';
+import { expenseBucket } from '../commitments';
 import { AR_DAYS_SHORT, monthName, num } from '../utils';
 import { InsightList } from './Home';
 import { PageHeader } from '../components/PageHeader';
@@ -26,6 +27,17 @@ export function Analysis() {
   const scoped = useMemo(() => (scope ? expenses.filter((e) => expenseOwner(e, fixed) === scope) : expenses), [expenses, fixed, scope]);
   const hist = useMemo(() => monthHistory(month, 6, scoped), [month, scoped]);
   const withSpend = a.byCategory.filter((s) => s.spent > 0);
+  // Money that left this month outside day-to-day spending
+  const buckets = useMemo(() => {
+    const byId = new Map(fixed.map((f) => [f.id, f]));
+    const out = { commitment: 0, transfer: 0 };
+    for (const e of scoped) {
+      if (!e.date.startsWith(month) || !e.fixedId) continue;
+      const b = expenseBucket(e, byId);
+      if (b !== 'daily') out[b] += e.amount;
+    }
+    return out;
+  }, [scoped, fixed, month]);
 
   return (
     <View style={{ flex: 1 }}>
@@ -36,10 +48,11 @@ export function Analysis() {
         {/* Key numbers */}
         <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
           <Metric label="متوسط الصرف اليومي" value={a.dailyAvg} />
-          <Metric label={a.isCurrent ? 'المتوقع لآخر الشهر' : 'مجموع الشهر'} value={a.projectedTotal}
+          <Metric label={a.isCurrent ? 'المصروف المتوقع لآخر الشهر' : 'مصروف الشهر'} value={a.projectedTotal}
             color={a.totalBudget > 0 && a.projectedTotal > a.totalBudget ? C.pom : C.text} />
           <Metric label="البادجت الكلي" value={a.totalBudget} />
-          <Metric label="المحجوز للإجبارية" value={a.pendingFixed} />
+          <Metric label="الالتزامات المدفوعة" value={buckets.commitment} />
+          <Metric label="تحويلات وادخار" value={buckets.transfer} />
           <Metric label="عدد المصاريف" raw={String(a.count)} />
         </View>
 

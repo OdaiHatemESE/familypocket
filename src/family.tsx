@@ -4,7 +4,8 @@ import { loginEmail } from './lib/config';
 import { friendlyError, supabase } from './lib/supabase';
 import { resolveAll } from './budgets';
 import { normalizeAlias } from '../supabase/functions/_shared/receipt/alias';
-import { BudgetRow, Category, CategoryBudgetRow, Expense, ExpenseLine, FixedExpense, Household, Item, Member, MemberBudget } from './types';
+import { incomesFor } from './commitments';
+import { BudgetRow, Category, CategoryBudgetRow, CommitmentPayment, Expense, ExpenseLine, FixedExpense, Household, IncomeRow, Item, Member, MemberBudget, ReserveRow } from './types';
 import { monthKey, shiftMonth } from './utils';
 
 type Status = 'loading' | 'signedOut' | 'ready';
@@ -109,9 +110,24 @@ type Ctx = {
   deleteExpense: (id: string) => Promise<void>;
   saveCategory: (c: CategoryInput) => Promise<void>;
   deleteCategory: (id: string) => Promise<void>;
-  saveFixed: (f: FixedInput) => Promise<void>;
+  /** Saves a commitment and returns its id */
+  saveFixed: (f: FixedInput) => Promise<string>;
   deleteFixed: (id: string) => Promise<void>;
-  markFixedPaid: (f: FixedExpense, date: string) => Promise<void>;
+  /** Records this month's payment of a monthly commitment; `amount` overrides the estimate for variable bills */
+  markFixedPaid: (f: FixedExpense, date: string, amount?: number) => Promise<void>;
+  /** Scheduled payments (cheques, instalments) and monthly set-asides for commitments paid every few months */
+  payments: CommitmentPayment[];
+  reserves: ReserveRow[];
+  /** Replaces a commitment's unpaid schedule; paid payments are kept */
+  saveSchedule: (fixedId: string, rows: { dueDate: string; amount: number; method: CommitmentPayment['method']; reference: string }[]) => Promise<void>;
+  /** Records a scheduled payment as paid (cheque cashed) on `date` */
+  payScheduled: (p: CommitmentPayment, date: string) => Promise<void>;
+  /** Sets or clears (null) the money set aside this month towards a commitment */
+  setReserve: (fixedId: string, month: string, amount: number | null) => Promise<void>;
+  /** Salaries: each member's for a month, and saving one from a month onwards */
+  incomeRows: IncomeRow[];
+  incomesFor: (month: string) => Record<string, number>;
+  saveIncome: (userId: string, month: string, amount: number) => Promise<void>;
 };
 
 const FamilyContext = createContext<Ctx | null>(null);
@@ -132,7 +148,13 @@ const toExpense = (r: any): Expense => ({
 const toItem = (r: any): Item => ({ id: r.id, categoryId: r.category_id, name: r.name, unit: r.unit, archived: !!r.archived });
 const toFixed = (r: any): FixedExpense => ({
   id: r.id, name: r.name, categoryId: r.category_id, amount: Number(r.amount) || 0, dueDay: r.due_day, active: r.active, ownerId: r.owner_id ?? null,
+  kind: r.kind ?? 'bill', everyMonths: r.every_months ?? 1, variable: !!r.variable,
 });
+const toPayment = (r: any): CommitmentPayment => ({
+  id: r.id, fixedId: r.fixed_id, dueDate: r.due_date, amount: Number(r.amount) || 0, method: r.method, reference: r.reference ?? '', expenseId: r.expense_id ?? null,
+});
+const toReserve = (r: any): ReserveRow => ({ fixedId: r.fixed_id, month: r.month, amount: Number(r.amount) || 0 });
+const toIncome = (r: any): IncomeRow => ({ userId: r.user_id, month: r.month, amount: Number(r.amount) || 0 });
 const toBudget = (r: any): BudgetRow => ({ userId: r.user_id, month: r.month, total: Number(r.total) || 0 });
 const toCatBudget = (r: any): CategoryBudgetRow => ({ userId: r.user_id, month: r.month, categoryId: r.category_id, amount: Number(r.amount) || 0 });
 
@@ -157,6 +179,9 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<Item[]>([]);
   const [budgetRows, setBudgetRows] = useState<BudgetRow[]>([]);
   const [categoryBudgetRows, setCategoryBudgetRows] = useState<CategoryBudgetRow[]>([]);
+  const [payments, setPayments] = useState<CommitmentPayment[]>([]);
+  const [reserves, setReserves] = useState<ReserveRow[]>([]);
+  const [incomeRows, setIncomeRows] = useState<IncomeRow[]>([]);
   const householdId = useRef<string | null>(null);
 
   const loaders = useMemo(
@@ -193,6 +218,19 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         setBudgetRows((a.data ?? []).map(toBudget));
         setCategoryBudgetRows((b.data ?? []).map(toCatBudget));
       },
+      commitments: async () => {
+        const [a, b] = await Promise.all([
+          supabase.from('commitment_payments').select('*').order('due_date'),
+          supabase.from('commitment_reserves').select('*'),
+        ]);
+        check(a); check(b);
+        setPayments((a.data ?? []).map(toPayment));
+        setReserves((b.data ?? []).map(toReserve));
+      },
+      incomes: async () => {
+        const { data } = check(await supabase.from('member_incomes').select('*'));
+        setIncomeRows((data ?? []).map(toIncome));
+      },
       household: async () => {
         const { data } = check(await supabase.from('households').select('*').limit(1).maybeSingle());
         if (data) setHousehold({ id: data.id, name: data.name, currency: data.currency });
@@ -204,6 +242,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const clear = useCallback(() => {
     householdId.current = null;
     setUserId(null); setMe(null); setHousehold(null); setProfiles([]); setCategories([]); setExpenses([]); setFixed([]); setItems([]); setBudgetRows([]); setCategoryBudgetRows([]);
+    setPayments([]); setReserves([]); setIncomeRows([]);
     setStatus('signedOut');
   }, []);
 
@@ -218,7 +257,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     setMe(toMember(profile));
     householdId.current = profile.household_id;
     try {
-      await Promise.all([loaders.household(), loaders.members(), loaders.categories(), loaders.fixed(), loaders.expenses(), loaders.budgets(), loaders.items()]);
+      await Promise.all([loaders.household(), loaders.members(), loaders.categories(), loaders.fixed(), loaders.expenses(), loaders.budgets(), loaders.items(), loaders.commitments(), loaders.incomes()]);
     } finally {
       setStatus('ready');
     }
@@ -259,6 +298,9 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     watch('items', 'items');
     watch('expense_items', 'expenses');
     watch('member_category_budgets', 'budgets');
+    watch('commitment_payments', 'commitments');
+    watch('commitment_reserves', 'commitments');
+    watch('member_incomes', 'incomes');
     channel.subscribe();
     return () => {
       Object.values(timers).forEach(clearTimeout);
@@ -405,23 +447,65 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       },
 
       saveFixed: async (f) => {
-        const row = { name: f.name, category_id: f.categoryId, amount: f.amount, due_day: f.dueDay, active: f.active, owner_id: f.ownerId };
-        if (f.id) check(await supabase.from('fixed_expenses').update(row).eq('id', f.id));
-        else check(await supabase.from('fixed_expenses').insert(row));
+        const row = {
+          name: f.name, category_id: f.categoryId, amount: f.amount, due_day: f.dueDay, active: f.active, owner_id: f.ownerId,
+          kind: f.kind, every_months: f.everyMonths, variable: f.variable,
+        };
+        const { data } = f.id
+          ? check(await supabase.from('fixed_expenses').update(row).eq('id', f.id).select('id').single())
+          : check(await supabase.from('fixed_expenses').insert(row).select('id').single());
         await loaders.fixed();
+        return data!.id as string;
       },
       deleteFixed: async (id) => {
         check(await supabase.from('fixed_expenses').delete().eq('id', id));
-        await loaders.fixed();
+        await Promise.all([loaders.fixed(), loaders.commitments()]);
       },
-      markFixedPaid: async (f, date) => {
+      markFixedPaid: async (f, date, amount) => {
         const { data } = check(
-          await supabase.from('expenses').insert({ amount: f.amount, note: f.name, category_id: f.categoryId, spent_on: date, fixed_id: f.id }).select().single(),
+          await supabase.from('expenses').insert({ amount: amount ?? f.amount, note: f.name, category_id: f.categoryId, spent_on: date, fixed_id: f.id }).select().single(),
         );
         setExpenses((xs) => [toExpense({ ...data, expense_items: [] }), ...xs]);
       },
+      payments, reserves,
+      saveSchedule: async (fixedId, rows) => {
+        check(await supabase.from('commitment_payments').delete().eq('fixed_id', fixedId).is('expense_id', null));
+        if (rows.length) {
+          check(await supabase.from('commitment_payments').insert(
+            rows.map((r) => ({ fixed_id: fixedId, due_date: r.dueDate, amount: r.amount, method: r.method, reference: r.reference })),
+          ));
+        }
+        await loaders.commitments();
+      },
+      payScheduled: async (p, date) => {
+        const f = fixed.find((x) => x.id === p.fixedId);
+        if (!f) throw new Error('الالتزام مش موجود');
+        const note = p.method === 'cheque' && p.reference ? `${f.name}، شيك ${p.reference}` : f.name;
+        const { data } = check(
+          await supabase.from('expenses').insert({ amount: p.amount, note, category_id: f.categoryId, spent_on: date, fixed_id: f.id }).select().single(),
+        );
+        const linked = await supabase.from('commitment_payments').update({ expense_id: data.id }).eq('id', p.id);
+        if (linked.error) {
+          // Keep the two in step: without the link the payment would still show as due
+          await supabase.from('expenses').delete().eq('id', data.id);
+          check(linked);
+        }
+        setExpenses((xs) => [toExpense({ ...data, expense_items: [] }), ...xs]);
+        await loaders.commitments();
+      },
+      setReserve: async (fixedId, month, amount) => {
+        if (amount === null) check(await supabase.from('commitment_reserves').delete().eq('fixed_id', fixedId).eq('month', month));
+        else check(await supabase.from('commitment_reserves').upsert({ fixed_id: fixedId, month, amount }));
+        await loaders.commitments();
+      },
+      incomeRows,
+      incomesFor: (month) => incomesFor(month, members, incomeRows),
+      saveIncome: async (uid, month, amount) => {
+        check(await supabase.from('member_incomes').upsert({ user_id: uid, month, amount, updated_at: new Date().toISOString() }));
+        await loaders.incomes();
+      },
     };
-  }, [status, me, household, members, profiles, categories, expenses, fixed, items, budgetRows, categoryBudgetRows, userId, loaders, loadAll]);
+  }, [status, me, household, members, profiles, categories, expenses, fixed, items, budgetRows, categoryBudgetRows, payments, reserves, incomeRows, userId, loaders, loadAll]);
 
   return <FamilyContext.Provider value={value}>{children}</FamilyContext.Provider>;
 }

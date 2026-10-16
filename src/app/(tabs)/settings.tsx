@@ -15,7 +15,7 @@ export default function Settings() {
   const totalBudget = members.reduce((a, m) => a + (budgets[m.id]?.total ?? 0), 0);
   const unset = members.filter((m) => !budgets[m.id]?.total).length;
   const activeFixed = fixed.filter((f) => f.active);
-  const fixedTotal = activeFixed.reduce((a, f) => a + f.amount, 0);
+  const fixedTotal = activeFixed.reduce((a, f) => a + f.amount / (f.everyMonths || 1), 0);
 
   return (
     <View style={{ flex: 1 }}>
@@ -63,8 +63,8 @@ export default function Settings() {
           <ListRow
             icon="calendar-sync-outline"
             iconColor="#C9822B"
-            title="المصاريف الإجبارية"
-            detail={activeFixed.length ? `${activeFixed.length} شهرياً بمجموع ${num(fixedTotal)} درهم` : 'إيجار، أقساط، فواتير ثابتة'}
+            title="الراتب والالتزامات"
+            detail={activeFixed.length ? `${activeFixed.length} التزامات، ${num(fixedTotal)} درهم بالشهر` : 'الراتب، الإيجار، المدارس، الفواتير، التحويلات'}
             onPress={() => router.push('/settings/fixed')}
             last
           />
