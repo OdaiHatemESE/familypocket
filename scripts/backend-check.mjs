@@ -245,8 +245,9 @@ if (q1?.error !== 'NOT_CONFIGURED') {
   const buy = await ask('اشتريت مبارح 4 كيلو بندورة بـ 12 درهم و2 علبة فيري بـ 30 وكيس خبز');
   ok(buy?.kind === 'receipt' && buy?.draft?.lines?.length === 3, 'purchase in words becomes a 3-line receipt', JSON.stringify(buy?.draft?.lines ?? buy));
   for (const l of buy?.draft?.lines ?? []) note(`spoken line: ${l.raw} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.needsPrice ? ' (needs price)' : ''}`);
-  const tom = buy?.draft?.lines?.find((l) => l.itemId === tomato.data?.id);
-  ok(tom && tom.quantity === 4 && tom.amount === 12 && tom.unit === 'كيلو', "بندورة matched to the family's طماطم (same product), 4 كيلو for 12", JSON.stringify(buy?.draft?.lines?.[0]));
+  // A different word for the same thing stays its own item unless the name is the same, but shares the family's type
+  const tom = buy?.draft?.lines?.find((l) => l.itemId === tomato.data?.id || l.group === 'طماطم');
+  ok(tom && tom.quantity === 4 && tom.amount === 12 && tom.unit === 'كيلو', "بندورة added up with the family's طماطم (same item or its type), 4 كيلو for 12", JSON.stringify(buy?.draft?.lines?.[0]));
   const soap2 = buy?.draft?.lines?.find((l) => l.itemId === item.data.id || /جلي/.test(l.group ?? ''));
   ok(soap2 && soap2.quantity === 2 && soap2.amount === 30, "فيري is the family's دواء جلي (same item or its type), 2 for 30", JSON.stringify(soap2));
   if (hasCreatedBy) {
