@@ -60,9 +60,11 @@ export const lineRules = (units: string[]) => `- quantity: the count or weight b
   Leave out brands, sizes, weights and codes ("ALMARAI FULL FAT MILK 2L" → "حليب كامل الدسم").
   If one of the family items below is this same product (same variant), write exactly its name, so purchases add up.
   Never reuse the name of a different variant: a family item "خبز أبيض" is not "خبز أسمر".
-- group: the product's general type in one or two Arabic words, shared by all its variants ("خبز", "شوكولاتة", "حليب",
-  "دواء جلي"). Reuse a type the family already uses when it is the same kind of product. When the name has nothing
-  more general, use the name itself.
+- group: what the product IS, in one or two Arabic words, shared by all its variants and brands: "خبز" for خبز أسمر,
+  "شوكولاتة" for شوكولاتة بندق, "حليب", "صدر دجاج", "طماطم". Not the aisle or category: "منظفات", "خضار", "لحوم",
+  "ألبان" are too broad. When one of the family items below is the same kind of product (any variant or brand), use
+  that item's type exactly as written, so they add up together: a family item "دواء جلي" (dishwashing liquid) makes
+  every dishwashing liquid's type "دواء جلي". When the name has nothing more general, use the name itself.
 - category_id: always one of the family category ids: the closest one, even if the match is loose. Food, drinks and
   cleaning supplies go to the household or groceries category when there is no closer one. Use null only for a line that is not a product.`;
 
