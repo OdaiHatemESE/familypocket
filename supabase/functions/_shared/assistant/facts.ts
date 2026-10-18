@@ -33,7 +33,7 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
     supabase.from('fixed_expenses').select('id, name, amount, due_day, active, owner_id, category_id, kind, every_months, variable'),
     supabase.from('member_budgets').select('user_id, month, total'),
     supabase.from('member_category_budgets').select('user_id, month, category_id, amount'),
-    supabase.from('items').select('id, name'),
+    supabase.from('items').select('id, name, group_name'),
     supabase.from('commitment_payments').select('fixed_id, due_date, amount, method, reference, expense_id').order('due_date'),
     supabase.from('commitment_reserves').select('fixed_id, month, amount'),
     supabase.from('member_incomes').select('user_id, month, amount'),
@@ -42,6 +42,7 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
   const people = new Map((profilesRes.data ?? []).map((p) => [p.id, p.display_name as string]));
   const catName = new Map(categories.map((c) => [c.id, c.name]));
   const itemName = new Map((itemsRes.data ?? []).map((i) => [i.id, i.name as string]));
+  const itemGroup = new Map((itemsRes.data ?? []).map((i) => [i.id, (i.group_name || i.name) as string]));
   const fixed = fixedRes.data ?? [];
   const fixedById = new Map(fixed.map((f) => [f.id, f]));
   const expenses = (expRes.data ?? []) as Exp[];
@@ -70,7 +71,8 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
   };
   type MonthAgg = { total: number; count: number; byCat: Map<string, number>; byMember: Map<string, number>; byMemberCat: Map<string, number>; byBucket: Map<string, number> };
   const months = new Map<string, MonthAgg>();
-  const items = new Map<string, Map<string, { qty: number; amount: number; times: number; unit: string; cat: string }>>();
+  const items = new Map<string, Map<string, { qty: number; amount: number; times: number; unit: string; cat: string; group: string }>>();
+  const types = new Map<string, Map<string, { amount: number; times: number; names: Set<string> }>>();
   for (const e of expenses) {
     const m = e.spent_on.slice(0, 7);
     if (!months.has(m)) months.set(m, { total: 0, count: 0, byCat: new Map(), byMember: new Map(), byMemberCat: new Map(), byBucket: new Map() });
@@ -88,11 +90,18 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
       const name = (l.item_id && itemName.get(l.item_id)) || l.name;
       if (!items.has(m)) items.set(m, new Map());
       const key = `${name}|${l.unit}`;
-      const cur = items.get(m)!.get(key) ?? { qty: 0, amount: 0, times: 0, unit: l.unit, cat: catName.get(l.category_id) ?? '' };
+      const group = (l.item_id && itemGroup.get(l.item_id)) || name;
+      const cur = items.get(m)!.get(key) ?? { qty: 0, amount: 0, times: 0, unit: l.unit, cat: catName.get(l.category_id) ?? '', group };
       cur.qty += Number(l.quantity);
       cur.amount += Number(l.amount);
       cur.times += 1;
       items.get(m)!.set(key, cur);
+      if (!types.has(m)) types.set(m, new Map());
+      const t = types.get(m)!.get(group) ?? { amount: 0, times: 0, names: new Set<string>() };
+      t.amount += Number(l.amount);
+      t.times += 1;
+      t.names.add(name);
+      types.get(m)!.set(group, t);
     }
   }
 
@@ -119,11 +128,18 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
     }
   }
 
-  out.push('\nITEMS BOUGHT (month | item | category | quantity and unit | AED paid | times bought | average price per unit):');
+  // Variants (خبز أبيض، خبز أسمر) are separate items that share a type (خبز): questions about "خبز" mean the type
+  out.push('\nTYPES BOUGHT, variants added together (month | type | AED paid | times bought | items of this type):');
+  for (const m of monthKeys) {
+    const list = [...(types.get(m)?.entries() ?? [])].sort((x, y) => y[1].amount - x[1].amount);
+    for (const [g, v] of list) out.push(`${monthName(m)} | ${g} | ${r2(v.amount)} | ${v.times} | ${[...v.names].join('، ')}`);
+  }
+
+  out.push('\nITEMS BOUGHT (month | item | type | category | quantity and unit | AED paid | times bought | average price per unit):');
   for (const m of monthKeys) {
     const list = [...(items.get(m)?.entries() ?? [])].sort((x, y) => y[1].amount - x[1].amount);
     for (const [k, v] of list) {
-      out.push(`${monthName(m)} | ${k.split('|')[0]} | ${v.cat} | ${r2(v.qty)} ${v.unit} | ${r2(v.amount)} | ${v.times} | ${v.qty ? r2(v.amount / v.qty) : '-'}`);
+      out.push(`${monthName(m)} | ${k.split('|')[0]} | ${v.group} | ${v.cat} | ${r2(v.qty)} ${v.unit} | ${r2(v.amount)} | ${v.times} | ${v.qty ? r2(v.amount / v.qty) : '-'}`);
     }
   }
 

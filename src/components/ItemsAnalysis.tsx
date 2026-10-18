@@ -9,16 +9,36 @@ import { monthName, num, shiftMonth } from '../utils';
 
 /** What was bought this month, how much of it, and at what price — compared with last month */
 export function ItemsAnalysis({ month, expenses }: { month: string; expenses: Expense[] }) {
-  const { categories } = useFamily();
+  const { categories, items } = useFamily();
   const prev = shiftMonth(month, -1);
   const stats = useMemo(() => itemStats(month, prev, expenses), [month, prev, expenses]);
   const [cat, setCat] = useState<string | null>(null);
   const [all, setAll] = useState(false);
+  const [open, setOpen] = useState<Set<string>>(new Set());
 
   const usedCats = categories.filter((c) => stats.some((s) => s.categoryId === c.id));
   const list = cat ? stats.filter((s) => s.categoryId === cat) : stats;
-  const shown = all ? list : list.slice(0, 8);
   const total = list.reduce((a, s) => a + s.amount, 0);
+
+  // Variants of one type (خبز أبيض، خبز أسمر) are added up under the type (خبز), and open to show each
+  const groups = useMemo(() => {
+    const groupOf = new Map(items.map((i) => [i.id, i.group || i.name]));
+    const map = new Map<string, ItemStat[]>();
+    for (const s of list) {
+      const g = (s.itemId && groupOf.get(s.itemId)) || s.name;
+      map.set(g, [...(map.get(g) ?? []), s]);
+    }
+    return [...map.entries()]
+      .map(([name, variants]) => ({ name, variants, amount: variants.reduce((a, v) => a + v.amount, 0) }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [list, items]);
+  const shown = all ? groups : groups.slice(0, 8);
+  const toggle = (g: string) => setOpen((o) => {
+    const n = new Set(o);
+    if (n.has(g)) n.delete(g);
+    else n.add(g);
+    return n;
+  });
 
   // Price moves worth pointing out (≥ 10% per unit vs last month)
   const moves = stats
@@ -51,12 +71,16 @@ export function ItemsAnalysis({ month, expenses }: { month: string; expenses: Ex
               <T size={TS.tiny} color={C.sub}>الصنف والكمية</T>
               <T size={TS.tiny} color={C.sub}>المدفوع وسعر الوحدة</T>
             </Row>
-            {shown.map((s, i) => (
-              <ItemRow key={s.key} s={s} first={i === 0} prevName={monthName(prev)} />
-            ))}
-            {list.length > 8 && (
+            {shown.map((g, i) =>
+              g.variants.length === 1 && g.variants[0].name === g.name ? (
+                <ItemRow key={g.name} s={g.variants[0]} first={i === 0} prevName={monthName(prev)} />
+              ) : (
+                <GroupRow key={g.name} name={g.name} variants={g.variants} amount={g.amount} first={i === 0} open={open.has(g.name)} onToggle={() => toggle(g.name)} prevName={monthName(prev)} />
+              ),
+            )}
+            {groups.length > 8 && (
               <Pressable onPress={() => setAll((x) => !x)} style={{ paddingVertical: 12, borderTopWidth: 1, borderColor: C.line }}>
-                <T size={TS.small} w="medium" color={C.oasis} align="center">{all ? 'عرض أقل' : `عرض كل الأصناف (${list.length})`}</T>
+                <T size={TS.small} w="medium" color={C.oasis} align="center">{all ? 'عرض أقل' : `عرض كل الأنواع (${groups.length})`}</T>
               </Pressable>
             )}
             <Row style={{ paddingHorizontal: 16, paddingVertical: 12, justifyContent: 'space-between', borderTopWidth: 1, borderColor: C.line, backgroundColor: C.paper }}>
@@ -84,6 +108,42 @@ export function ItemsAnalysis({ month, expenses }: { month: string; expenses: Ex
         </>
       )}
     </>
+  );
+}
+
+/** A type with several variants: its total, and the variants underneath when opened */
+function GroupRow({ name, variants, amount, first, open, onToggle, prevName }: {
+  name: string; variants: ItemStat[]; amount: number; first: boolean; open: boolean; onToggle: () => void; prevName: string;
+}) {
+  const unit = variants.every((v) => v.unit === variants[0].unit) ? variants[0].unit : null;
+  const qty = unit ? variants.reduce((a, v) => a + v.quantity, 0) : 0;
+  return (
+    <View style={{ borderTopWidth: first ? 0 : 1, borderColor: C.line }}>
+      <Pressable onPress={onToggle} accessibilityRole="button" accessibilityState={{ expanded: open }} style={({ pressed }) => ({ backgroundColor: pressed ? C.paper : 'transparent' })}>
+        <Row style={{ paddingHorizontal: 16, paddingVertical: 11, gap: 10 }}>
+          <View style={{ flex: 1 }}>
+            <Row style={{ gap: 6 }}>
+              <T w="semibold">{name}</T>
+              <View style={{ backgroundColor: C.paper, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 1 }}>
+                <T size={TS.tiny} color={C.sub}>{variants.length} أصناف</T>
+              </View>
+            </Row>
+            <T size={TS.tiny} color={C.sub} numberOfLines={1}>
+              {unit ? `${qtyLabel(qty, unit)}، ` : ''}{variants.map((v) => v.name).join('، ')}
+            </T>
+          </View>
+          <Money value={amount} />
+          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={18} color={C.faint} />
+        </Row>
+      </Pressable>
+      {open && (
+        <View style={{ backgroundColor: C.paper, marginHorizontal: 10, marginBottom: 10, borderRadius: 14 }}>
+          {variants.map((v, i) => (
+            <ItemRow key={v.key} s={v} first={i === 0} prevName={prevName} />
+          ))}
+        </View>
+      )}
+    </View>
   );
 }
 

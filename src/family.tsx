@@ -12,13 +12,15 @@ type Status = 'loading' | 'signedOut' | 'ready';
 
 type CategoryInput = Omit<Category, 'id' | 'sort'> & { id?: string };
 type FixedInput = Omit<FixedExpense, 'id'> & { id?: string };
-type ExpenseInput = { amount: number; note: string; categoryId: string; date: string; fixedId?: string | null; lines?: ExpenseLine[] };
-type ItemInput = { id?: string; categoryId: string; name: string; unit: string };
+type ExpenseInput = { amount: number; note: string; categoryId: string; date: string; fixedId?: string | null; lines?: ExpenseLine[]; /** Defaults to the signed-in member */ userId?: string | null };
+type ItemInput = { id?: string; categoryId: string; name: string; unit: string; group?: string };
 
 export type ScanLine = {
   raw: string;
   itemId: string | null;
   name: string;
+  /** General type (خبز for خبز أسمر) */
+  group?: string;
   unit: string;
   categoryId: string | null;
   quantity: number;
@@ -80,8 +82,8 @@ type Ctx = {
   /** Creates the item (or returns the existing one with the same name in that category) */
   saveItem: (i: ItemInput) => Promise<Item>;
   deleteItem: (id: string) => Promise<void>;
-  /** Sends a receipt photo to the server and returns a draft to review */
-  scanReceipt: (photo: { base64: string; mimeType: string }) => Promise<ScanDraft>;
+  /** Sends a receipt (one photo, several photos of one long receipt, or a PDF) and returns a draft to review */
+  scanReceipt: (files: { base64: string; mimeType: string }[]) => Promise<ScanDraft>;
   /** Sends a chat message: answers a question, or turns a purchase described in words into a receipt draft */
   askAssistant: (message: string, history: ChatTurn[]) => Promise<AssistantReply>;
   /** Remembers what a shop prints for each item, so the next receipt matches by itself */
@@ -143,11 +145,11 @@ const toLine = (r: any): ExpenseLine => ({
   id: r.id, itemId: r.item_id, categoryId: r.category_id, name: r.name, unit: r.unit, quantity: Number(r.quantity) || 0, amount: Number(r.amount) || 0,
 });
 const toExpense = (r: any): Expense => ({
-  id: r.id, userId: r.user_id, categoryId: r.category_id, fixedId: r.fixed_id, amount: Number(r.amount) || 0,
+  id: r.id, userId: r.user_id, createdBy: r.created_by ?? r.user_id, categoryId: r.category_id, fixedId: r.fixed_id, amount: Number(r.amount) || 0,
   note: r.note ?? '', date: r.spent_on, createdAt: Date.parse(r.created_at) || 0,
   lines: (r.expense_items ?? []).map(toLine).sort((a: ExpenseLine, b: ExpenseLine) => b.amount - a.amount),
 });
-const toItem = (r: any): Item => ({ id: r.id, categoryId: r.category_id, name: r.name, unit: r.unit, archived: !!r.archived });
+const toItem = (r: any): Item => ({ id: r.id, categoryId: r.category_id, name: r.name, group: r.group_name || r.name, unit: r.unit, archived: !!r.archived });
 const toFixed = (r: any): FixedExpense => ({
   id: r.id, name: r.name, categoryId: r.category_id, amount: Number(r.amount) || 0, dueDay: r.due_day, active: r.active, ownerId: r.owner_id ?? null,
   kind: r.kind ?? 'bill', everyMonths: r.every_months ?? 1, variable: !!r.variable,
@@ -185,6 +187,10 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const [reserves, setReserves] = useState<ReserveRow[]>([]);
   const [incomeRows, setIncomeRows] = useState<IncomeRow[]>([]);
   const householdId = useRef<string | null>(null);
+  const itemsRef = useRef<Item[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   const loaders = useMemo(
     () => ({
@@ -318,24 +324,36 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     });
     const expenseRow = (e: ExpenseInput) => ({
       amount: e.amount, note: e.note, category_id: e.categoryId, spent_on: e.date, fixed_id: e.fixedId ?? null,
+      ...(e.userId ? { user_id: e.userId } : {}),
     });
 
     return {
       status, me, household, members, categories, expenses, fixed, memberOf, items,
       saveItem: async (i) => {
-        const name = i.name.trim();
-        const existing = items.find((x) => x.categoryId === i.categoryId && x.name === name && x.id !== i.id);
-        if (existing && !i.id) return existing;
+        const name = i.name.trim().replace(/\s+/g, ' ');
+        const group = (i.group ?? '').trim().replace(/\s+/g, ' ') || name;
+        // Read the latest list (not this render's), so two lines with the same new name make one item
+        const existing = itemsRef.current.find((x) => x.categoryId === i.categoryId && x.name === name && x.id !== i.id);
+        if (existing && !i.id) {
+          if (existing.archived) await supabase.from('items').update({ archived: false }).eq('id', existing.id);
+          return existing;
+        }
         if (existing) throw new Error('في صنف بنفس الاسم بهذا التصنيف');
-        const row = { category_id: i.categoryId, name, unit: i.unit };
-        const { data } = i.id
-          ? check(await supabase.from('items').update(row).eq('id', i.id).select().single())
-          : check(await supabase.from('items').insert(row).select().single());
+        const row = { category_id: i.categoryId, name, unit: i.unit, group_name: group };
+        let res = i.id
+          ? await supabase.from('items').update(row).eq('id', i.id).select().single()
+          : await supabase.from('items').insert(row).select().single();
+        if (res.error?.code === '23505' && !i.id) {
+          // Saved a moment ago (another line, or another family member): use that one
+          res = await supabase.from('items').select('*').eq('category_id', i.categoryId).eq('name', name).single();
+        }
+        const { data } = check(res);
         const saved = toItem(data);
+        itemsRef.current = [...itemsRef.current.filter((x) => x.id !== saved.id), saved];
         setItems((xs) => [...xs.filter((x) => x.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name, 'ar')));
         return saved;
       },
-      scanReceipt: (photo) => invokeFn<ScanDraft>('scan-receipt', { image: photo.base64, mimeType: photo.mimeType }),
+      scanReceipt: (files) => invokeFn<ScanDraft>('scan-receipt', { files: files.map((f) => ({ data: f.base64, mimeType: f.mimeType })) }),
       askAssistant: (message, history) => invokeFn<AssistantReply>('assistant', { message, history: history.slice(-6) }),
       learnAliases: async (pairs) => {
         const rows = new Map<string, string>();

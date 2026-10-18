@@ -63,7 +63,7 @@ export async function logUsage(s: Session, kind: UsageKind, provider: string, mo
 /** The family's categories, items and learned receipt aliases */
 export async function loadCatalog(s: Session): Promise<Catalog & { aliases: Record<string, string> }> {
   const [itemsRes, catsRes, aliasRes] = await Promise.all([
-    s.supabase.from('items').select('id, name, unit, category_id').eq('archived', false).limit(1500),
+    s.supabase.from('items').select('id, name, unit, category_id, group_name').eq('archived', false).limit(1500),
     s.supabase.from('categories').select('id, name').order('sort'),
     s.supabase.from('item_aliases').select('alias, item_id').limit(5000),
   ]);

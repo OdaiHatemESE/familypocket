@@ -68,6 +68,7 @@ export function Assistant() {
     const lines: ExpenseLine[] = m.draft.lines.map((l) => ({
       itemId: l.itemId,
       name: l.name,
+      group: l.group,
       unit: l.unit,
       categoryId: l.categoryId ?? '',
       quantity: l.quantity,

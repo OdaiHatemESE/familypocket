@@ -9,6 +9,7 @@ export type DraftLine = {
   raw: string;
   itemId: string | null;
   name: string;
+  group: string; // general type (خبز for خبز أسمر)
   unit: string;
   categoryId: string | null;
   quantity: number;
@@ -57,21 +58,22 @@ export function normalizeReceipt(
     let quantity = num(l?.quantity);
     if (!isFinite(quantity) || quantity <= 0) quantity = 1;
 
-    // A saved correction beats the model's guess; otherwise accept the model's item only if it really exists
+    // A correction the family saved for this printed text wins; otherwise a family item only when it has the same
+    // name (same product and variant). Different variants stay separate items and meet through their type.
     const learnedId = rawText ? aliases[normalizeAlias(rawText)] : undefined;
-    const item =
-      (learnedId && itemById.get(learnedId)) ||
-      (l?.item_id ? itemById.get(l.item_id) : undefined) ||
-      (l?.suggested_name ? itemByName.get(key(String(l.suggested_name))) : undefined);
+    const said = String(l?.name ?? '').trim().replace(/\s+/g, ' ');
+    const item = (learnedId && itemById.get(learnedId)) || (said ? itemByName.get(key(said)) : undefined);
 
     const unit = item?.unit ?? (units.includes(l?.unit) ? l.unit : units[0]);
     const categoryId = item?.category_id ?? (l?.category_id && catIds.has(l.category_id) ? l.category_id : null);
-    const name = (item?.name ?? String(l?.suggested_name ?? '').trim()) || rawText || 'صنف';
+    const name = (item?.name ?? said) || rawText || 'صنف';
+    const group = (item ? item.group_name || item.name : String(l?.group ?? '').trim().replace(/\s+/g, ' ')) || name;
 
     lines.push({
       raw: rawText,
       itemId: item?.id ?? null,
       name: name.slice(0, 60),
+      group: group.slice(0, 40),
       unit,
       categoryId,
       quantity: Math.round(quantity * 1000) / 1000,

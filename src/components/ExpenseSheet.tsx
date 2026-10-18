@@ -1,14 +1,14 @@
 import * as Haptics from 'expo-haptics';
 import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Platform, Pressable, TextInput, View } from 'react-native';
 import { qtyLabel } from '../budgets';
 import { useFamily } from '../family';
-import { pickReceiptPhoto } from '../lib/receiptPhoto';
+import { MAX_PAGES, pickReceiptPdf, pickReceiptPhotos, ReceiptFile } from '../lib/receiptPhoto';
 import { C, F, TS } from '../theme';
 import { Expense, ExpenseLine, Item, ReceiptPrefill, UNITS } from '../types';
-import { Avatar, CatTile, ErrorText, HScroll, Icon, Money, PrimaryButton, Row, T } from '../ui';
+import { Avatar, CatTile, ErrorText, HScroll, Icon, IconName, Money, PrimaryButton, Row, T } from '../ui';
 import { dayLabel, num, parseAmount, shortDay, toKey } from '../utils';
-import { CategoryPicker, UnitPicker } from './ItemSheet';
+import { CategoryPicker, GroupField, UnitPicker } from './ItemSheet';
 import { Sheet } from './Sheet';
 
 const tap = () => {
@@ -36,7 +36,14 @@ const inputStyle = {
   paddingVertical: 12,
 };
 
-type Props = { visible: boolean; onClose: () => void; editing?: Expense | null; prefill?: ReceiptPrefill | null };
+type Props = {
+  visible: boolean;
+  onClose: () => void;
+  editing?: Expense | null;
+  prefill?: ReceiptPrefill | null;
+  /** The member a new expense is for (the one selected on the home screen); defaults to the signed-in member */
+  forMember?: string | null;
+};
 
 /** Mounted fresh each time it opens, so the form always starts from `editing` */
 export function ExpenseSheet(props: Props) {
@@ -45,11 +52,15 @@ export function ExpenseSheet(props: Props) {
 }
 
 type View_ = 'main' | 'pick' | 'line';
-type Draft = { index: number | null; itemId: string | null; name: string; unit: string; categoryId: string; qty: string; amount: string; raw?: string };
+type Draft = { index: number | null; itemId: string | null; name: string; group: string; unit: string; categoryId: string; qty: string; amount: string; raw?: string };
 
-function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
-  const { categories, items, expenses, me, memberOf, addExpense, updateExpense, deleteExpense, saveItem, scanReceipt, learnAliases } = useFamily();
-  const readOnly = !!editing && editing.userId !== me?.id;
+function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
+  const { categories, items, expenses, me, members, memberOf, addExpense, updateExpense, deleteExpense, saveItem, scanReceipt, learnAliases } = useFamily();
+  // Editable by the member it belongs to and by whoever recorded it
+  const readOnly = !!editing && editing.userId !== me?.id && editing.createdBy !== me?.id;
+  const [ownerId, setOwnerId] = useState<string | null>(
+    editing?.userId ?? (forMember && members.some((m) => m.id === forMember) ? forMember : me?.id ?? null),
+  );
   const [mode, setMode] = useState<'amount' | 'receipt'>(editing?.lines.length || prefill ? 'receipt' : 'amount');
   const [view, setView] = useState<View_>('main');
   const [amount, setAmount] = useState(editing && !editing.lines.length ? String(editing.amount) : '');
@@ -63,10 +74,11 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
 
   // item picker + line editor state
   const [query, setQuery] = useState('');
-  const [newItem, setNewItem] = useState<{ categoryId: string; unit: string } | null>(null);
+  const [newItem, setNewItem] = useState<{ categoryId: string; unit: string; group: string } | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   // receipt photo reading
   const [scanning, setScanning] = useState(false);
+  const [pages, setPages] = useState<ReceiptFile[]>([]); // photos of a long receipt, waiting to be read together
   const [scanNotes, setScanNotes] = useState<string[]>(prefill?.warnings ?? []);
   const [relinking, setRelinking] = useState<Draft | null>(null); // a line waiting for a different item
 
@@ -117,7 +129,7 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
       const n = parseFloat(amount);
       if (!(n > 0)) return setError('اكتب المبلغ أولاً');
       if (!catId) return setError('اختر تصنيف المصروف');
-      data = { amount: n, note: note.trim(), categoryId: catId, date, fixedId: editing?.fixedId ?? null, lines: [] };
+      data = { amount: n, note: note.trim(), categoryId: catId, date, fixedId: editing?.fixedId ?? null, lines: [], userId: ownerId };
     }
     setBusy(true);
     try {
@@ -127,7 +139,7 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
         for (const l of lines) {
           if (l.itemId) finalLines.push(l);
           else {
-            const it = await saveItem({ name: l.name, categoryId: l.categoryId, unit: l.unit });
+            const it = await saveItem({ name: l.name, categoryId: l.categoryId, unit: l.unit, group: l.group });
             finalLines.push({ ...l, itemId: it.id });
           }
         }
@@ -136,7 +148,7 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
         const byCat = new Map<string, number>();
         finalLines.forEach((l) => byCat.set(l.categoryId, (byCat.get(l.categoryId) ?? 0) + l.amount));
         const mainCat = [...byCat.entries()].sort((a, b) => b[1] - a[1])[0][0];
-        data = { amount: Math.round(total * 100) / 100, note: note.trim(), categoryId: mainCat, date, fixedId: editing?.fixedId ?? null, lines: finalLines };
+        data = { amount: Math.round(total * 100) / 100, note: note.trim(), categoryId: mainCat, date, fixedId: editing?.fixedId ?? null, lines: finalLines, userId: ownerId };
       }
       if (editing) await updateExpense(editing.id, data!);
       else await addExpense(data!);
@@ -150,21 +162,16 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
     }
   };
 
-  const scan = async (source: 'camera' | 'library') => {
+  // Reads the receipt: one photo, the parts of a long receipt, or a PDF
+  const read = async (files: ReceiptFile[]) => {
     setError('');
-    let photo;
-    try {
-      photo = await pickReceiptPhoto(source);
-    } catch (e) {
-      return setError((e as Error).message);
-    }
-    if (!photo) return;
     setScanning(true);
     try {
-      const d = await scanReceipt(photo);
-      const read: ExpenseLine[] = d.lines.map((l) => ({
+      const d = await scanReceipt(files);
+      const got: ExpenseLine[] = d.lines.map((l) => ({
         itemId: l.itemId,
         name: l.name,
+        group: l.group,
         unit: l.unit,
         categoryId: l.categoryId ?? '',
         quantity: l.quantity,
@@ -172,15 +179,41 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
         raw: l.raw,
         uncertain: l.uncertain,
       }));
-      setLines((ls) => [...ls, ...read]);
+      setLines((ls) => [...ls, ...got]);
       if (d.store && !note.trim()) setNote(d.store);
       if (d.date) setDate(d.date);
       setScanNotes(d.warnings);
+      setPages([]);
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (e) {
       setError((e as Error).message);
     }
     setScanning(false);
+  };
+
+  // Camera: one part at a time, then read them together. Library: the chosen photos are read straight away.
+  const addPhotos = async (source: 'camera' | 'library') => {
+    setError('');
+    const room = MAX_PAGES - pages.length;
+    if (room <= 0) return setError(`أكثر إشي ${MAX_PAGES} صور للفاتورة الوحدة`);
+    try {
+      const got = await pickReceiptPhotos(source, room);
+      if (!got.length) return;
+      if (source === 'library' && !pages.length) return read(got);
+      setPages((p) => [...p, ...got]);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const addPdf = async () => {
+    setError('');
+    try {
+      const pdf = await pickReceiptPdf();
+      if (pdf) await read([pdf]);
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
 
   const remove = async () => {
@@ -199,6 +232,7 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
   // ───── read-only view of someone else's expense ─────
   if (readOnly && editing) {
     const owner = memberOf(editing.userId);
+    const recorder = memberOf(editing.createdBy);
     const cat = catOf(editing.categoryId);
     return (
       <Sheet visible={visible} onClose={onClose} title="تفاصيل المصروف">
@@ -212,7 +246,9 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
         <Row style={{ backgroundColor: C.paper, borderRadius: 14, padding: 12, gap: 10, marginTop: 12, marginBottom: 12 }}>
           <Avatar name={owner?.displayName ?? '؟'} color={owner?.color ?? C.faint} size={32} />
           <T size={TS.small} color={C.sub} style={{ flex: 1 }}>
-            سجّله {owner?.displayName ?? 'عضو سابق'}. صاحب المصروف بس بيقدر يعدّله أو يحذفه.
+            {recorder && recorder.id !== owner?.id
+              ? `مصروف ${owner?.displayName ?? 'عضو سابق'}، سجّله ${recorder.displayName}. هم الاثنين بس بيقدروا يعدّلوه أو يحذفوه.`
+              : `سجّله ${owner?.displayName ?? 'عضو سابق'}. صاحب المصروف بس بيقدر يعدّله أو يحذفه.`}
           </T>
         </Row>
       </Sheet>
@@ -229,20 +265,20 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
     const startLine = (it: Item) => {
       if (relinking) {
         // Keep what was read from the receipt (quantity, price, printed text); swap the item
-        setDraft({ ...relinking, itemId: it.id, name: it.name, unit: it.unit, categoryId: it.categoryId });
+        setDraft({ ...relinking, itemId: it.id, name: it.name, group: it.group, unit: it.unit, categoryId: it.categoryId });
         setRelinking(null);
         setView('line');
         return;
       }
       const last = usage.last.get(it.id);
-      setDraft({ index: null, itemId: it.id, name: it.name, unit: it.unit, categoryId: it.categoryId, qty: '1', amount: last ? String(Math.round(last.price * 100) / 100) : '' });
+      setDraft({ index: null, itemId: it.id, name: it.name, group: it.group, unit: it.unit, categoryId: it.categoryId, qty: '1', amount: last ? String(Math.round(last.price * 100) / 100) : '' });
       setView('line');
     };
     const createItem = async () => {
       if (!newItem?.categoryId) return setError('اختر تصنيف الصنف الجديد');
       setBusy(true);
       try {
-        const it = await saveItem({ name: q, categoryId: newItem.categoryId, unit: newItem.unit });
+        const it = await saveItem({ name: q, categoryId: newItem.categoryId, unit: newItem.unit, group: newItem.group });
         setNewItem(null);
         setError('');
         startLine(it);
@@ -292,7 +328,7 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
         {!!q && !exact && (
           <View style={{ marginTop: 12, backgroundColor: C.oasis + '10', borderRadius: 16, padding: 14 }}>
             {!newItem ? (
-              <Pressable onPress={() => setNewItem({ categoryId: visibleItems[0]?.categoryId ?? '', unit: 'حبة' })} style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+              <Pressable onPress={() => setNewItem({ categoryId: visibleItems[0]?.categoryId ?? '', unit: 'حبة', group: '' })} style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
                 <Icon name="plus-circle-outline" size={22} color={C.oasis} />
                 <T w="semibold" color={C.oasis}>أضف «{q}» كصنف جديد</T>
               </Pressable>
@@ -303,6 +339,8 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
                 <UnitPicker value={newItem.unit} onChange={(u) => setNewItem({ ...newItem, unit: u })} />
                 <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 12, marginBottom: 8 }}>التصنيف</T>
                 <CategoryPicker value={newItem.categoryId} onChange={(id) => setNewItem({ ...newItem, categoryId: id })} />
+                <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 12, marginBottom: 8 }}>النوع</T>
+                <GroupField value={newItem.group} onChange={(g) => setNewItem({ ...newItem, group: g })} name={q} />
                 <View style={{ marginTop: 14 }}>
                   <PrimaryButton label="أضف الصنف وكمّل" onPress={createItem} busy={busy} tone="oasis" />
                 </View>
@@ -356,7 +394,7 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
       if (!draft.itemId && !draft.name.trim()) return setError('اكتب اسم الصنف');
       if (!draft.categoryId) return setError('اختر تصنيف الصنف');
       const line: ExpenseLine = {
-        itemId: draft.itemId, name: draft.name.trim(), unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt,
+        itemId: draft.itemId, name: draft.name.trim(), group: draft.group.trim() || undefined, unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt,
         raw: draft.raw, uncertain: false, needsPrice: false,
       };
       setLines((ls) => (draft.index === null ? [...ls, line] : ls.map((l, i) => (i === draft.index ? { ...l, ...line } : l))));
@@ -423,6 +461,8 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
             <UnitPicker value={draft.unit} onChange={(u) => setDraft({ ...draft, unit: u })} />
             <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 14, marginBottom: 8 }}>التصنيف</T>
             <CategoryPicker value={draft.categoryId} onChange={(id) => setDraft({ ...draft, categoryId: id })} />
+            <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 14, marginBottom: 8 }}>النوع</T>
+            <GroupField value={draft.group} onChange={(g) => setDraft({ ...draft, group: g })} name={draft.name} />
           </View>
         )}
 
@@ -562,32 +602,74 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
         </>
       ) : (
         <>
-          <View style={{ flexDirection: 'row-reverse', gap: 8, marginTop: 12 }}>
-            <Pressable
-              onPress={() => scan('camera')}
-              disabled={scanning}
-              accessibilityRole="button"
-              style={({ pressed }) => ({
-                flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8,
-                paddingVertical: 13, borderRadius: 14, backgroundColor: C.ink, opacity: pressed || scanning ? 0.8 : 1,
-              })}
-            >
-              <Icon name="camera-outline" size={20} color="#fff" />
-              <T w="semibold" color="#fff">صوّر الفاتورة</T>
-            </Pressable>
-            <Pressable
-              onPress={() => scan('library')}
-              disabled={scanning}
-              accessibilityRole="button"
-              style={({ pressed }) => ({
-                flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6,
-                paddingVertical: 13, paddingHorizontal: 16, borderRadius: 14, backgroundColor: C.paper, opacity: pressed || scanning ? 0.7 : 1,
-              })}
-            >
-              <Icon name="image-outline" size={20} color={C.ink} />
-              <T w="medium">من الصور</T>
-            </Pressable>
-          </View>
+          {pages.length === 0 ? (
+            <View style={{ flexDirection: 'row-reverse', gap: 8, marginTop: 12 }}>
+              <Pressable
+                onPress={() => addPhotos('camera')}
+                disabled={scanning}
+                accessibilityRole="button"
+                style={({ pressed }) => ({
+                  flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  paddingVertical: 13, borderRadius: 14, backgroundColor: C.ink, opacity: pressed || scanning ? 0.8 : 1,
+                })}
+              >
+                <Icon name="camera-outline" size={20} color="#fff" />
+                <T w="semibold" color="#fff">صوّر الفاتورة</T>
+              </Pressable>
+              <SourceButton icon="image-multiple-outline" label="الصور" onPress={() => addPhotos('library')} disabled={scanning} />
+              <SourceButton icon="file-pdf-box" label="PDF" onPress={addPdf} disabled={scanning} />
+            </View>
+          ) : (
+            !scanning && (
+              <View style={{ backgroundColor: C.paper, borderRadius: 16, padding: 12, marginTop: 12 }}>
+                <T size={TS.small} w="semibold">
+                  {pages.length === 1 ? 'صورة وحدة جاهزة' : `${pages.length} أجزاء من نفس الفاتورة`}
+                </T>
+                <T size={TS.tiny} color={C.sub} style={{ marginTop: 2 }}>
+                  فاتورة طويلة؟ صوّرها على أجزاء من فوق لتحت، وخلّي كل جزء يبيّن آخر سطر من الجزء اللي قبله.
+                </T>
+                <HScroll style={{ marginTop: 10 }}>
+                  {pages.map((p, i) => (
+                    <View key={p.uri + i} style={{ width: 64, height: 86, borderRadius: 10, overflow: 'hidden', backgroundColor: C.line }}>
+                      <Image source={{ uri: `data:${p.mimeType};base64,${p.base64}` }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                      <View style={{ position: 'absolute', bottom: 3, right: 3, backgroundColor: C.ink + 'CC', borderRadius: 999, paddingHorizontal: 6 }}>
+                        <T size={TS.tiny} w="semibold" color="#fff">{i + 1}</T>
+                      </View>
+                      <Pressable
+                        onPress={() => setPages((ps) => ps.filter((_, j) => j !== i))}
+                        accessibilityLabel={`احذف الجزء ${i + 1}`}
+                        hitSlop={6}
+                        style={{ position: 'absolute', top: 3, left: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: C.ink + 'CC', alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        <Icon name="close" size={14} color="#fff" />
+                      </Pressable>
+                    </View>
+                  ))}
+                  {pages.length < MAX_PAGES && (
+                    <Pressable
+                      onPress={() => addPhotos('camera')}
+                      accessibilityLabel="صوّر الجزء التالي"
+                      style={{ width: 64, height: 86, borderRadius: 10, borderWidth: 1.5, borderStyle: 'dashed', borderColor: C.oasis, alignItems: 'center', justifyContent: 'center', gap: 2 }}
+                    >
+                      <Icon name="camera-plus-outline" size={22} color={C.oasis} />
+                      <T size={TS.tiny} color={C.oasis} align="center">الجزء التالي</T>
+                    </Pressable>
+                  )}
+                </HScroll>
+                <View style={{ flexDirection: 'row-reverse', gap: 8, marginTop: 12 }}>
+                  <Pressable
+                    onPress={() => read(pages)}
+                    accessibilityRole="button"
+                    style={({ pressed }) => ({ flex: 1, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 14, backgroundColor: C.ink, opacity: pressed ? 0.85 : 1 })}
+                  >
+                    <Icon name="text-recognition" size={20} color="#fff" />
+                    <T w="semibold" color="#fff">اقرأ الفاتورة</T>
+                  </Pressable>
+                  <SourceButton icon="image-plus" label="من الصور" onPress={() => addPhotos('library')} />
+                </View>
+              </View>
+            )
+          )}
 
           {scanning && (
             <Row style={{ gap: 10, backgroundColor: C.paper, borderRadius: 14, padding: 14, marginTop: 10 }}>
@@ -616,7 +698,7 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
               lines={lines}
               onPress={(i) => {
                 const l = lines[i];
-                setDraft({ index: i, itemId: l.itemId, name: l.name, unit: UNITS.includes(l.unit as (typeof UNITS)[number]) ? l.unit : 'حبة', categoryId: l.categoryId, qty: String(l.quantity), amount: String(l.amount), raw: l.raw });
+                setDraft({ index: i, itemId: l.itemId, name: l.name, group: l.group ?? '', unit: UNITS.includes(l.unit as (typeof UNITS)[number]) ? l.unit : 'حبة', categoryId: l.categoryId, qty: String(l.quantity), amount: String(l.amount), raw: l.raw });
                 setView('line');
               }}
             />
@@ -632,6 +714,36 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
             <Icon name="plus" size={20} color={C.oasis} />
             <T w="semibold" color={C.oasis}>{lines.length ? 'أضف صنف ثاني' : 'أضف أول صنف'}</T>
           </Pressable>
+        </>
+      )}
+
+      {/* Whose expense: counts against that member's budget */}
+      {members.length > 1 && !editing?.fixedId && (
+        <>
+          <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 18, marginBottom: 10 }}>مصروف مين؟</T>
+          <HScroll>
+            {members.map((m) => {
+              const on = m.id === ownerId;
+              return (
+                <Pressable
+                  key={m.id}
+                  onPress={() => (tap(), setOwnerId(m.id))}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on }}
+                  style={{
+                    flexDirection: 'row-reverse', alignItems: 'center', gap: 8, paddingVertical: 6, paddingLeft: 14, paddingRight: 6,
+                    borderRadius: 999, borderWidth: 1.5, borderColor: on ? m.color : C.line, backgroundColor: on ? m.color + '14' : C.surface,
+                  }}
+                >
+                  <Avatar name={m.displayName} color={m.color} size={28} />
+                  <T size={TS.small} w={on ? 'semibold' : 'regular'}>{m.id === me?.id ? `${m.displayName} (أنا)` : m.displayName}</T>
+                </Pressable>
+              );
+            })}
+          </HScroll>
+          {ownerId !== me?.id && (
+            <T size={TS.tiny} color={C.sub} style={{ marginTop: 6 }}>بينحسب من بادجت {memberOf(ownerId)?.displayName}.</T>
+          )}
         </>
       )}
 
@@ -660,6 +772,23 @@ function ExpenseForm({ visible, onClose, editing, prefill }: Props) {
         style={{ ...inputStyle, marginBottom: 8 }}
       />
     </Sheet>
+  );
+}
+
+function SourceButton({ icon, label, onPress, disabled }: { icon: IconName; label: string; onPress: () => void; disabled?: boolean }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      style={({ pressed }) => ({
+        flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6,
+        paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14, backgroundColor: C.paper, opacity: pressed || disabled ? 0.7 : 1,
+      })}
+    >
+      <Icon name={icon} size={20} color={C.ink} />
+      <T w="medium">{label}</T>
+    </Pressable>
   );
 }
 

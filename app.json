@@ -35,7 +35,8 @@
           "photosPermission": "التطبيق بيحتاج الوصول للصور عشان تختار صورة الفاتورة.",
           "cameraPermission": "التطبيق بيحتاج الكاميرا عشان تصوّر الفاتورة."
         }
-      ]
+      ],
+      "expo-document-picker"
     ],
     "scheme": "familypocket",
     "experiments": {

@@ -19,7 +19,12 @@ export function claudeProvider(apiKey: string | undefined, model = DEFAULT_MODEL
     async json<T>(req: JsonRequest) {
       if (!apiKey) throw new ProviderError('NOT_CONFIGURED', 'ANTHROPIC_API_KEY is not set');
       const content: Record<string, unknown>[] = [];
-      if (req.image) content.push({ type: 'image', source: { type: 'base64', media_type: req.image.mimeType, data: req.image.base64 } });
+      // Files go before the text, as the API recommends
+      for (const f of req.files ?? []) {
+        content.push(f.mimeType === 'application/pdf'
+          ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.base64 } }
+          : { type: 'image', source: { type: 'base64', media_type: f.mimeType, data: f.base64 } });
+      }
       content.push({ type: 'text', text: req.prompt });
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',

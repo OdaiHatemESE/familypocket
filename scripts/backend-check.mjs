@@ -72,8 +72,24 @@ const aEdit = await a.from('expenses').update({ amount: 1 }).eq('id', bExp.data?
 ok((aEdit.data?.length ?? 0) === 0, "owner cannot edit member's expense");
 const bEdit = await b.from('expenses').update({ amount: 50 }).eq('id', bExp.data?.id).select();
 ok(bEdit.data?.length === 1, 'member edits own expense');
-const spoof = await b.from('expenses').insert({ amount: 5, category_id: catId, spent_on: today, user_id: (await a.auth.getUser()).data.user.id });
-ok(!!spoof.error, 'member cannot record an expense as someone else');
+// Recording for another member (migration 0008): the expense is theirs, the recorder can still edit it
+const aId = (await a.auth.getUser()).data.user.id;
+const hasCreatedBy = !(await a.from('expenses').select('created_by').limit(1)).error;
+if (!hasCreatedBy) {
+  const spoof = await b.from('expenses').insert({ amount: 5, category_id: catId, spent_on: today, user_id: aId });
+  ok(!!spoof.error, 'member cannot record an expense as someone else (before 0008)');
+} else {
+  const forA = await b.from('expenses').insert({ amount: 5, note: 'qa for owner', category_id: catId, spent_on: today, user_id: aId }).select().single();
+  ok(!forA.error && forA.data.user_id === aId && !!forA.data.created_by && forA.data.created_by !== aId, 'member records an expense for the owner (counts as the owner\'s)', forA.error?.message ?? JSON.stringify(forA.data));
+  const recEdit = await b.from('expenses').update({ amount: 6 }).eq('id', forA.data?.id).select();
+  ok(recEdit.data?.length === 1, 'whoever recorded it can edit it');
+  const ownerEdit = await a.from('expenses').update({ amount: 7 }).eq('id', forA.data?.id).select();
+  ok(ownerEdit.data?.length === 1, 'the member it belongs to can edit it');
+  const fakeRecorder = await b.from('expenses').insert({ amount: 5, category_id: catId, spent_on: today, user_id: aId, created_by: aId });
+  ok(!!fakeRecorder.error, 'cannot pretend someone else recorded it');
+  const recDel = await b.from('expenses').delete().eq('id', forA.data?.id).select();
+  ok(recDel.data?.length === 1, 'whoever recorded it can delete it');
+}
 
 // 4. Budgets and fixed obligations (any member)
 const budget = await b.from('categories').update({ monthly_budget: 3500 }).eq('id', catId).select();
@@ -97,6 +113,10 @@ const inject = await other.from('expenses').insert({ amount: 9, category_id: cat
 ok(!!inject.error, "another family cannot write into this family's data");
 const otherAdd = await other.rpc('set_member_password', { p_user: (await b.auth.getUser()).data.user.id, p_password: 'hacked123' });
 ok(!!otherAdd.error, "another family's owner cannot reset this member's password", otherAdd.error?.message);
+if (hasCreatedBy) {
+  const intoOther = await other.from('expenses').insert({ amount: 5, category_id: (await other.from('categories').select('id').limit(1).single()).data.id, spent_on: today, user_id: aId });
+  ok(!!intoOther.error, 'cannot record an expense for someone outside the family');
+}
 
 // 5b. Monthly member budgets
 const month = today.slice(0, 7);
@@ -157,7 +177,7 @@ ok(noAuth.status === 401, 'receipt reader refuses requests without sign-in', Str
 
 const photo = readFileSync(new globalThis.URL('./fixtures/receipt-carrefour.jpg', import.meta.url)).toString('base64');
 const t0 = Date.now();
-const scan = await b.functions.invoke('scan-receipt', { body: { image: photo, mimeType: 'image/jpeg' } });
+const scan = await b.functions.invoke('scan-receipt', { body: { files: [{ data: photo, mimeType: 'image/jpeg' }] } });
 const ms = Date.now() - t0;
 let scanBody = scan.data;
 if (scan.error) {
@@ -175,13 +195,29 @@ if (scanBody?.error === 'NOT_CONFIGURED') {
     ok(Math.abs((scanBody.linesTotal ?? 0) - 91.39) < 0.02, 'lines add up to the amount paid (VAT spread)', String(scanBody.linesTotal));
     ok(scanBody.date === '2026-10-14', 'receipt date read', String(scanBody.date));
     const soap = scanBody.lines.find((l) => /fairy/i.test(l.raw));
-    ok(soap?.itemId === item.data.id && soap?.quantity === 2, "known item matched to the family's item with quantity 2", JSON.stringify(soap));
+    ok((soap?.itemId === item.data.id || /جلي/.test(soap?.group ?? '')) && soap?.quantity === 2, "FAIRY is the family's دواء جلي (same item or its type), quantity 2", JSON.stringify(soap));
+    ok(scanBody.lines.every((l) => l.group), 'every line has a general type', JSON.stringify(scanBody.lines.map((l) => [l.name, l.group])));
     const chicken = scanBody.lines.find((l) => /chicken/i.test(l.raw));
     ok(chicken && Math.abs(chicken.quantity - 1.25) < 0.01 && chicken.unit === 'كيلو', 'weighed item read as 1.25 كيلو', JSON.stringify(chicken));
     const milk = scanBody.lines.find((l) => /milk/i.test(l.raw));
     ok(milk && milk.quantity === 1 && milk.amount < 10.5, 'packaged item counted as 1 pack with its discount applied', JSON.stringify(milk));
     ok(scanBody.lines.every((l) => l.categoryId), 'every line given a family category', JSON.stringify(scanBody.lines.filter((l) => !l.categoryId).map((l) => l.raw)));
   }
+  // A long receipt photographed in two overlapping parts, and the same receipt as a PDF
+  const part = (f) => readFileSync(new globalThis.URL(`./fixtures/${f}`, import.meta.url)).toString('base64');
+  for (const [label, files] of [
+    ['two overlapping photos', [{ data: part('receipt-part1.jpg'), mimeType: 'image/jpeg' }, { data: part('receipt-part2.jpg'), mimeType: 'image/jpeg' }]],
+    ['PDF', [{ data: part('receipt-carrefour.pdf'), mimeType: 'application/pdf' }]],
+  ]) {
+    const t = Date.now();
+    const res = await b.functions.invoke('scan-receipt', { body: { files } });
+    let body = res.data;
+    if (res.error) { try { body = await res.error.context.json(); } catch { body = { error: String(res.error) }; } }
+    note(`${label} (${Date.now() - t}ms): ${(body?.lines ?? []).map((l) => `${l.name}/${l.group} ${l.amount}`).join(' · ') || body?.message}`);
+    ok(body?.lines?.length === 5 && Math.abs((body?.linesTotal ?? 0) - 91.39) < 0.02, `receipt read from ${label}: 5 lines, 91.39 (overlap not counted twice)`, `${body?.lines?.length} ${body?.linesTotal} ${body?.message ?? ''}`);
+  }
+  const tooMany = await b.functions.invoke('scan-receipt', { body: { files: Array.from({ length: 7 }, () => ({ data: 'eA==', mimeType: 'image/jpeg' })) } });
+  ok(tooMany.error?.context?.status === 413, 'more than 6 photos refused', String(tooMany.error?.context?.status));
 }
 
 // 5e. The assistant: questions answered from the family's data, purchases described in words
@@ -210,9 +246,18 @@ if (q1?.error !== 'NOT_CONFIGURED') {
   ok(buy?.kind === 'receipt' && buy?.draft?.lines?.length === 3, 'purchase in words becomes a 3-line receipt', JSON.stringify(buy?.draft?.lines ?? buy));
   for (const l of buy?.draft?.lines ?? []) note(`spoken line: ${l.raw} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.needsPrice ? ' (needs price)' : ''}`);
   const tom = buy?.draft?.lines?.find((l) => l.itemId === tomato.data?.id);
-  ok(tom && tom.quantity === 4 && tom.amount === 12 && tom.unit === 'كيلو', "بندورة matched to the family's طماطم, 4 كيلو for 12", JSON.stringify(buy?.draft?.lines?.[0]));
-  const soap2 = buy?.draft?.lines?.find((l) => l.itemId === item.data.id);
-  ok(soap2 && soap2.quantity === 2 && soap2.amount === 30, "فيري matched to the family's دواء جلي, 2 for 30", JSON.stringify(soap2));
+  ok(tom && tom.quantity === 4 && tom.amount === 12 && tom.unit === 'كيلو', "بندورة matched to the family's طماطم (same product), 4 كيلو for 12", JSON.stringify(buy?.draft?.lines?.[0]));
+  const soap2 = buy?.draft?.lines?.find((l) => l.itemId === item.data.id || /جلي/.test(l.group ?? ''));
+  ok(soap2 && soap2.quantity === 2 && soap2.amount === 30, "فيري is the family's دواء جلي (same item or its type), 2 for 30", JSON.stringify(soap2));
+  if (hasCreatedBy) {
+    // Variants stay separate items and meet through their type
+    const white = await b.from('items').insert({ category_id: catId, name: 'خبز أبيض', unit: 'ربطة', group_name: 'خبز' }).select().single();
+    const brown = await ask('اشتريت ربطة خبز أسمر بـ 4 دراهم');
+    const bl = brown?.draft?.lines?.[0];
+    note(`variant line: ${bl?.name} / ${bl?.group} item=${bl?.itemId ? 'existing' : 'new'}`);
+    ok(bl && bl.itemId !== white.data?.id && /أسمر/.test(bl.name) && bl.group === 'خبز', 'خبز أسمر stays its own item under the type خبز (not merged into خبز أبيض)', JSON.stringify(bl));
+    await b.from('items').delete().eq('id', white.data?.id);
+  }
   const bread = buy?.draft?.lines?.find((l) => l.needsPrice);
   ok(bread && bread.amount === 0, 'item said without a price is flagged for a price', JSON.stringify(buy?.draft?.lines));
   ok(buy?.draft?.date === yesterday, '"مبارح" becomes yesterday\'s date', `${buy?.draft?.date} vs ${yesterday}`);

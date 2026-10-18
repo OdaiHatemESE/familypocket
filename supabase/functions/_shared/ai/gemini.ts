@@ -22,7 +22,7 @@ export function geminiProvider(apiKey: string | undefined, preferredModel?: stri
       if (!apiKey) throw new ProviderError('NOT_CONFIGURED', 'GEMINI_API_KEY is not set');
       const models = [...new Set([preferredModel, ...FALLBACK_MODELS].filter(Boolean) as string[])];
       const parts: Record<string, unknown>[] = [{ text: req.prompt }];
-      if (req.image) parts.push({ inline_data: { mime_type: req.image.mimeType, data: req.image.base64 } });
+      for (const f of req.files ?? []) parts.push({ inline_data: { mime_type: f.mimeType, data: f.base64 } });
       const body = {
         contents: [{ role: 'user', parts }],
         generationConfig: {

@@ -103,7 +103,7 @@ export default function TabsLayout() {
         <Tabs.Screen name="settings" />
         <Tabs.Screen name="assistant" options={{ href: null }} />
       </Tabs>
-      <ExpenseSheet visible={sheetOpen} editing={editing} prefill={prefill} onClose={() => setSheetOpen(false)} />
+      <ExpenseSheet visible={sheetOpen} editing={editing} prefill={prefill} forMember={scope} onClose={() => setSheetOpen(false)} />
     </TabsContext.Provider>
   );
 }

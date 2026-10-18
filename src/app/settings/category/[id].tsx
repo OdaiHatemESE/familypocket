@@ -78,7 +78,7 @@ export default function CategoryDetail() {
               >
                 <View style={{ flex: 1 }}>
                   <T w="semibold">{it.name}</T>
-                  <T size={TS.small} color={C.sub}>بالـ{it.unit}</T>
+                  <T size={TS.small} color={C.sub}>{it.group && it.group !== it.name ? `${it.group}، ` : ''}بالـ{it.unit}</T>
                 </View>
                 {s ? (
                   <View style={{ alignItems: 'flex-start' }}>

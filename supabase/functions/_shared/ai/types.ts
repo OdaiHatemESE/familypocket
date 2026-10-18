@@ -1,4 +1,4 @@
-// An AI provider turns a prompt (and optionally a photo) into JSON that matches a schema.
+// An AI provider turns a prompt (and optionally photos or PDFs) into JSON that matches a schema.
 // Every provider has the same shape, so they can be swapped with one setting (AI_PROVIDER).
 
 export type JsonRequest = {
@@ -7,7 +7,8 @@ export type JsonRequest = {
   schema: Record<string, unknown>;
   /** Short snake_case name for what is being produced, e.g. "record_receipt" */
   name: string;
-  image?: { base64: string; mimeType: string };
+  /** Photos (image/*) or PDF files (application/pdf), read together as one document, in order */
+  files?: { base64: string; mimeType: string }[];
   maxTokens?: number;
 };
 
