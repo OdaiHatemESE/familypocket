@@ -128,6 +128,8 @@ type Ctx = {
   incomeRows: IncomeRow[];
   incomesFor: (month: string) => Record<string, number>;
   saveIncome: (userId: string, month: string, amount: number) => Promise<void>;
+  /** Owner only. 'month': that month's expenses and set-asides. 'all': everything except members; categories back to the defaults */
+  resetData: (scope: 'month' | 'all', month?: string) => Promise<void>;
 };
 
 const FamilyContext = createContext<Ctx | null>(null);
@@ -361,6 +363,11 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         await loaders.budgets();
       },
       refresh: async () => {
+        if (userId) await loadAll(userId);
+      },
+      resetData: async (scope, month) => {
+        const { error } = await supabase.rpc('reset_family_data', { p_scope: scope, p_month: month ?? null });
+        if (error) throw new Error((error as { code?: string }).code === 'PGRST202' ? 'هالخيار لسه مش مفعّل على السيرفر' : friendlyError(error));
         if (userId) await loadAll(userId);
       },
 

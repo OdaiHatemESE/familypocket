@@ -73,6 +73,9 @@ export default function Settings() {
         <SectionHead title="حسابي" />
         <Card>
           <ListRow icon="account-circle-outline" iconColor="#6B4FA3" title="الاسم واللون وكلمة المرور" detail={`@${me?.username}`} onPress={() => router.push('/settings/account')} />
+          {me?.role === 'owner' && (
+            <ListRow icon="delete-sweep-outline" title="مسح البيانات" detail="مصاريف شهر، أو ابدأوا من جديد" danger onPress={() => router.push('/settings/reset')} />
+          )}
           <ListRow
             icon="logout"
             title={confirmOut ? 'اضغط مرة ثانية لتسجيل الخروج' : 'تسجيل الخروج'}

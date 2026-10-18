@@ -40,6 +40,7 @@ function Gate() {
         <Stack.Screen name="settings/category/[id]" />
         <Stack.Screen name="settings/fixed" />
         <Stack.Screen name="settings/account" />
+        <Stack.Screen name="settings/reset" />
       </Stack.Protected>
       <Stack.Protected guard={!signedIn}>
         <Stack.Screen name="login" />

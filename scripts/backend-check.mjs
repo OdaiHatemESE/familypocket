@@ -261,6 +261,8 @@ ok(!!o.error, "another family cannot link its payment to this family's expense")
 // 6. Owner-only actions
 const bTry = await b.rpc('set_member_password', { p_user: (await a.auth.getUser()).data.user.id, p_password: 'hacked123' });
 ok(bTry.error?.message === 'OWNER_ONLY', 'member cannot reset passwords', bTry.error?.message);
+const bWipe = await b.rpc('reset_family_data', { p_scope: 'all' });
+if (bWipe.error?.code !== 'PGRST202') ok(bWipe.error?.message === 'OWNER_ONLY', "member cannot clear the family's data", bWipe.error?.message);
 r = await a.rpc('set_member_password', { p_user: (await b.auth.getUser()).data.user.id, p_password: 'newpass123' });
 ok(!r.error, 'owner resets member password', r.error?.message);
 ok(!(await signIn(B, 'newpass123')).error, 'member signs in with the new password');
@@ -272,6 +274,39 @@ const after = await signIn(B, 'newpass123');
 ok(!!after.error, 'removed member cannot sign in', after.error?.message);
 const kept = await a.from('expenses').select('id').eq('id', bExp.data?.id);
 ok(kept.data?.length === 1, "removed member's expenses stay in the family");
+
+// 8. Starting over: the owner clears one month, or everything except the members
+const probe = await a.rpc('reset_family_data', { p_scope: 'nothing' });
+if (probe.error?.code === 'PGRST202') {
+  note('reset_family_data is not installed yet (migration 0007), reset checks skipped');
+} else {
+  ok(probe.error?.message === 'BAD_SCOPE', 'reset rejects an unknown scope', probe.error?.message);
+  const lastMonth = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 2, 15)).toISOString().slice(0, 10);
+  const old = await a.from('expenses').insert({ amount: 7, note: 'qa last month', category_id: catId, spent_on: lastMonth }).select().single();
+  const otherExp = await other.from('expenses').insert({ amount: 9, note: 'qa other', category_id: (await other.from('categories').select('id').limit(1).single()).data.id, spent_on: today }).select().single();
+  r = await other.rpc('reset_family_data', { p_scope: 'month', p_month: month });
+  ok(!r.error, "another family's owner resets their own month", r.error?.message);
+  ok((await a.from('expenses').select('id').eq('id', bExp.data?.id)).data?.length === 1, "another family's reset leaves this family's expenses alone");
+  ok((await other.from('expenses').select('id').eq('id', otherExp.data?.id)).data?.length === 0, "the other family's own expense is gone");
+  r = await a.rpc('reset_family_data', { p_scope: 'month', p_month: '2026-13' });
+  ok(r.error?.message === 'BAD_MONTH', 'reset rejects a bad month', r.error?.message);
+  r = await a.rpc('reset_family_data', { p_scope: 'month', p_month: month });
+  ok(!r.error, 'owner clears this month', r.error?.message);
+  const left = await a.from('expenses').select('spent_on');
+  ok(left.data?.length === 1 && left.data[0].spent_on === lastMonth, "this month's expenses gone, last month's kept", JSON.stringify(left.data));
+  ok((await a.from('commitment_reserves').select('month').eq('month', month)).data?.length === 0, "this month's set-asides gone");
+  const unpaid = await a.from('commitment_payments').select('expense_id').eq('id', cheques.data[0].id).single();
+  ok(unpaid.data && unpaid.data.expense_id === null, 'the cheque cashed this month is waiting again', JSON.stringify(unpaid.data));
+  ok((await a.from('fixed_expenses').select('id')).data?.length >= 1, 'commitments stay after a month reset');
+  r = await a.rpc('reset_family_data', { p_scope: 'all' });
+  ok(!r.error, 'owner starts over', r.error?.message);
+  const fresh = await Promise.all(['expenses', 'fixed_expenses', 'commitment_payments', 'member_incomes', 'member_budgets', 'items'].map((t) => a.from(t).select('*', { count: 'exact', head: true })));
+  ok(fresh.every((x) => x.count === 0), 'starting over clears expenses, commitments, salaries, budgets and items', fresh.map((x) => x.count).join(','));
+  ok((await a.from('categories').select('id')).data?.length === 5, 'categories back to the 5 defaults');
+  ok((await a.from('profiles').select('id')).data?.length === 2, 'members stay after starting over');
+  ok(!(await signIn(A, 'secret123')).error, 'owner still signs in after starting over');
+  ok((await other.from('categories').select('id')).data?.length >= 5, "another family's categories untouched");
+}
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nAll checks passed');
 process.exit(failed ? 1 : 0);
