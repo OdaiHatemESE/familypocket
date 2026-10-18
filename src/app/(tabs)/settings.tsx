@@ -44,7 +44,7 @@ export default function Settings() {
           />
           <ListRow
             icon="chart-donut"
-            iconColor="#0F7B6C"
+            iconColor={C.oasis}
             title="البادجت الشهري"
             detail={
               totalBudget
@@ -73,6 +73,7 @@ export default function Settings() {
         <SectionHead title="حسابي" />
         <Card>
           <ListRow icon="account-circle-outline" iconColor="#6B4FA3" title="الاسم واللون وكلمة المرور" detail={`@${me?.username}`} onPress={() => router.push('/settings/account')} />
+          <ListRow icon="lightbulb-on-outline" iconColor={C.oasis} title="تعرّف على قديش" detail="شو بيعمل التطبيق وكيف تستخدمه" onPress={() => router.push('/settings/intro')} />
           {me?.role === 'owner' && (
             <ListRow icon="delete-sweep-outline" title="مسح البيانات" detail="مصاريف شهر، أو ابدأوا من جديد" danger onPress={() => router.push('/settings/reset')} />
           )}
@@ -84,7 +85,7 @@ export default function Settings() {
             last
           />
         </Card>
-        <T size={TS.tiny} color={C.faint} align="center" style={{ marginTop: 24 }}>مصاريفي، بياناتكم محفوظة ومتزامنة بين أجهزة العائلة.</T>
+        <T size={TS.tiny} color={C.faint} align="center" style={{ marginTop: 24 }}>قديش، بياناتكم محفوظة ومتزامنة بين أجهزة العائلة.</T>
       </ScrollView>
     </View>
   );

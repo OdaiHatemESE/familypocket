@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "مصاريفي",
+    "name": "قديش",
     "slug": "masarifi",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -12,7 +12,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#14213D",
+        "backgroundColor": "#0B2530",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -22,7 +22,7 @@
     },
     "web": {
       "favicon": "./assets/favicon.png",
-      "name": "مصاريفي",
+      "name": "قديش",
       "bundler": "metro",
       "output": "single"
     },
@@ -36,7 +36,16 @@
           "cameraPermission": "التطبيق بيحتاج الكاميرا عشان تصوّر الفاتورة."
         }
       ],
-      "expo-document-picker"
+      "expo-document-picker",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "backgroundColor": "#0B2530",
+          "resizeMode": "contain"
+        }
+      ]
     ],
     "scheme": "familypocket",
     "experiments": {

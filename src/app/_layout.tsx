@@ -11,7 +11,9 @@ import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import { ActivityIndicator, I18nManager, Platform, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { Logo } from '../components/Logo';
 import { FamilyProvider, useFamily } from '../family';
+import { OnboardingProvider, useOnboarding } from '../onboarding';
 import { C } from '../theme';
 import { T } from '../ui';
 
@@ -21,10 +23,12 @@ I18nManager.forceRTL(false);
 
 function Gate() {
   const { status } = useFamily();
-  if (status === 'loading') {
+  const { seen } = useOnboarding();
+  if (status === 'loading' || seen === null) {
     return (
       <View style={{ flex: 1, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center', gap: 16 }}>
-        <T w="bold" size={34} color="#fff" align="center">مصاريفي</T>
+        <Logo size={96} tone="light" />
+        <T w="bold" size={34} color="#fff" align="center">قديش</T>
         <ActivityIndicator color={C.oasisLight} />
       </View>
     );
@@ -41,6 +45,11 @@ function Gate() {
         <Stack.Screen name="settings/fixed" />
         <Stack.Screen name="settings/account" />
         <Stack.Screen name="settings/reset" />
+        <Stack.Screen name="settings/intro" options={{ animation: 'fade' }} />
+      </Stack.Protected>
+      {/* First launch: the intro comes before signing in */}
+      <Stack.Protected guard={!signedIn && !seen}>
+        <Stack.Screen name="welcome" options={{ animation: 'fade' }} />
       </Stack.Protected>
       <Stack.Protected guard={!signedIn}>
         <Stack.Screen name="login" />
@@ -62,10 +71,12 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <FamilyProvider>
-        <StatusBar style="auto" />
-        <View style={Platform.OS === 'web' ? { flex: 1, width: '100%', maxWidth: 560, alignSelf: 'center' } : { flex: 1 }}>
-          <Gate />
-        </View>
+        <OnboardingProvider>
+          <StatusBar style="auto" />
+          <View style={Platform.OS === 'web' ? { flex: 1, width: '100%', maxWidth: 560, alignSelf: 'center' } : { flex: 1 }}>
+            <Gate />
+          </View>
+        </OnboardingProvider>
       </FamilyProvider>
     </SafeAreaProvider>
   );

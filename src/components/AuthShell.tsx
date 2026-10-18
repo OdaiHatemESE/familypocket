@@ -3,6 +3,7 @@ import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { C, TS } from '../theme';
 import { T } from '../ui';
+import { Logo } from './Logo';
 
 // The same day-bars motif as the home screen, as the brand mark
 const BARS = [0.35, 0.6, 0.45, 0.9, 0.5, 0.3, 0.7, 1.15, 0.55, 0.4, 0.8, 0.5, 0.25, 0.65];
@@ -22,13 +23,16 @@ export function AuthShell({ title, subtitle, children }: { title: string; subtit
             borderBottomRightRadius: 32,
           }}
         >
-          <T w="bold" size={40} color="#fff" style={{ lineHeight: 56 }}>مصاريفي</T>
-          <T size={TS.body} color={C.inkMuted}>مصاريف العائلة وبادجتها، بمكان واحد.</T>
+          <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 12 }}>
+            <Logo size={52} tone="light" />
+            <T w="bold" size={40} color="#fff" style={{ lineHeight: 56 }}>قديش</T>
+          </View>
+          <T size={TS.body} color={C.inkMuted} style={{ marginTop: 4 }}>قديش صرفنا؟ وقديش ضايل؟ مصاريف العيلة كلها بمكان واحد.</T>
           <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-end', gap: 4, height: 44, marginTop: 24 }}>
             {BARS.map((h, i) => (
               <View
                 key={i}
-                style={{ flex: 1, height: Math.min(h, 1) * 44, borderRadius: 2, backgroundColor: h > 1 ? C.pomLight : C.oasisLight, opacity: 0.85 }}
+                style={{ flex: 1, height: Math.min(h, 1) * 44, borderRadius: 2, backgroundColor: C.oasisLight, opacity: 0.35 + Math.min(h, 1) * 0.55 }}
               />
             ))}
           </View>

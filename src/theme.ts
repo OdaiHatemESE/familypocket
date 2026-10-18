@@ -1,18 +1,18 @@
-// "Sabkha" palette — deep indigo ink, cool salt-flat paper, oasis green for on-track,
+// "قديش" palette, from the brand mark: deep teal ink, warm paper, mint for on-track and growth,
 // saffron for caution, pomegranate for over budget.
 export const C = {
-  ink: '#14213D',
-  inkSoft: '#22324F',
-  inkMuted: '#8FA0BF',
-  paper: '#F1F4F1',
+  ink: '#0B2530',
+  inkSoft: '#15394A',
+  inkMuted: '#8FB3B8',
+  paper: '#F3F4F0',
   surface: '#FFFFFF',
-  text: '#14213D',
+  text: '#0B2530',
   sub: '#667085',
   faint: '#98A2B3',
-  line: '#E1E6E2',
-  track: '#E8ECE9',
-  oasis: '#0F7B6C',
-  oasisLight: '#5FD3B5',
+  line: '#E2E6E1',
+  track: '#E8ECE8',
+  oasis: '#077A59', // mint, dark enough for text and white-on-mint buttons
+  oasisLight: '#2EE6A6', // bright brand mint, on dark backgrounds
   saffron: '#D9961F',
   saffronLight: '#F4C66A',
   pom: '#C8394B',

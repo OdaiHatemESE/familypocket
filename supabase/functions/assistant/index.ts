@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
   ]);
   const weekday = new Date(`${today}T12:00:00Z`).toLocaleDateString('ar', { weekday: 'long', timeZone: 'UTC' });
 
-  const prompt = `You are the assistant inside "مصاريفي", a family budgeting app in the UAE. Amounts are in AED (درهم).
+  const prompt = `You are the assistant inside "قديش" (Arabic for "how much?"), a family budgeting app in the UAE. If asked, your name is قديش. Amounts are in AED (درهم).
 Today is ${weekday} ${today}. The person writing is ${me.data?.display_name ?? 'a family member'}.
 
 First decide what their message is:

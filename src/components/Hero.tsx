@@ -90,7 +90,7 @@ export function Hero({ a, pendingCommitments, onPrev, onNext }: { a: MonthAnalys
   const barColor = over ? C.pomLight : pct > 0.85 ? C.saffronLight : C.oasisLight;
 
   // Day-to-day spending only; commitments are counted on the salary card
-  const label = a.isCurrent ? (solo ? 'مصروفي هذا الشهر' : 'مصروفنا هذا الشهر') : `مصروف ${monthName(a.month)}`;
+  const label = a.isCurrent ? (solo ? 'قديش صرفت هالشهر' : 'قديش صرفنا هالشهر') : `قديش صرفنا بـ${monthName(a.month)}`;
 
   return (
     <View
