@@ -146,6 +146,10 @@ export function normalizeReceipt(
         categoryId: mainCat, quantity: 1, amount: round2(vat), isNew: false, uncertain: false, learned: false, needsPrice: false,
       });
     }
+    // A discount already taken off its product and read again as a line of its own: drop the repeat
+    const over = round2(total - sum(lines));
+    const repeat = over > 0.01 ? lines.find((l) => l.kind === 'discount' && Math.abs(over + l.amount) <= 0.01) : undefined;
+    if (repeat) lines.splice(lines.indexOf(repeat), 1);
     const gap = round2(total - sum(lines));
     if (Math.abs(gap) > 0.01) {
       lines.push({
@@ -153,6 +157,14 @@ export function normalizeReceipt(
         categoryId: mainCat, quantity: 1, amount: gap, isNew: false, uncertain: true, learned: false, needsPrice: false,
       });
       warnings.push(`الأسطر ما طابقت مجموع الفاتورة بـ ${Math.abs(gap)} درهم، فضفنا سطر «${CHARGE_NAMES.adjust}». راجعوه قبل الحفظ.`);
+    }
+  }
+  // A discount printed under a product (more products follow it) belongs to that product, not to the whole order
+  for (let i = lines.length - 1; i > 0; i--) {
+    const [prev, l] = [lines[i - 1], lines[i]];
+    if (l.kind === 'discount' && prev.kind === 'item' && prev.amount + l.amount >= 0 && lines.slice(i + 1).some((x) => x.kind === 'item')) {
+      prev.amount = round2(prev.amount + l.amount);
+      lines.splice(i, 1);
     }
   }
   const linesTotal = sum(lines);
