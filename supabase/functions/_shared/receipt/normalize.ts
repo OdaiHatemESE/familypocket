@@ -138,6 +138,14 @@ export function normalizeReceipt(
       for (const t of taxes) lines.splice(lines.indexOf(t), 1);
       warnings.push('الأسعار شاملة الضريبة، فما ضفنا سطر ضريبة.');
     }
+    // VAT printed on the receipt but not read as a line, when it is exactly what is missing: it was added on top
+    const vat = num(raw?.vat);
+    if (!lines.some((l) => l.kind === 'tax') && isFinite(vat) && vat > 0 && Math.abs(total - sum(lines) - vat) <= 0.01) {
+      lines.push({
+        kind: 'tax', raw: '', itemId: null, name: CHARGE_NAMES.tax, group: CHARGE_NAMES.tax, unit: units[0],
+        categoryId: mainCat, quantity: 1, amount: round2(vat), isNew: false, uncertain: false, learned: false, needsPrice: false,
+      });
+    }
     const gap = round2(total - sum(lines));
     if (Math.abs(gap) > 0.01) {
       lines.push({
@@ -153,7 +161,7 @@ export function normalizeReceipt(
   if (date && (date > today || date < '2020-01-01')) date = null;
 
   const charges = lines.filter((l) => l.kind !== 'item' && l.kind !== 'adjust');
-  if (charges.length) warnings.push(`ضفنا ${charges.map((l) => l.name).join('، ')} كأسطر لحالها.`);
+  if (charges.length) warnings.push(`ضفنا ${charges.map((l) => l.name).join('، ')} ${charges.length === 1 ? 'كسطر لحاله' : 'كأسطر لحالها'}.`);
   const unpriced = lines.filter((l) => l.needsPrice).map((l) => `«${l.name}»`);
   if (unpriced.length) warnings.push(`ما ذكرت سعر ${unpriced.join('، ')}. اضغط على السطر واكتب سعره قبل الحفظ.`);
   if (!products.length) warnings.push('ما قدرنا نقرأ أصناف من الصورة. جرّبوا صورة أوضح للفاتورة كاملة.');

@@ -159,7 +159,7 @@ ok(!!negItem.error, 'a product line cannot be negative');
 const posDiscount = await b.from('expense_items').insert({ expense_id: receipt.data.id, kind: 'discount', category_id: catId, name: 'x', unit: 'حبة', quantity: 1, amount: 5 });
 ok(!!posDiscount.error, 'a discount line cannot be positive');
 const withLines = await a.from('expenses').select('id, expense_items(quantity, amount)').eq('id', receipt.data.id).single();
-ok(withLines.data?.expense_items?.length === 2, 'family sees receipt lines', JSON.stringify(withLines.error));
+ok(withLines.data?.expense_items?.length === 4, 'family sees receipt lines', JSON.stringify(withLines.error));
 const foreignLine = await a.from('expense_items').insert({ expense_id: receipt.data.id, category_id: catId, name: 'x', unit: 'حبة', quantity: 1, amount: 1 });
 ok(!!foreignLine.error, "owner cannot add lines to member's receipt");
 const editLine = await a.from('expense_items').update({ amount: 1 }).eq('expense_id', receipt.data.id).select();

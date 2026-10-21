@@ -26,6 +26,7 @@ export type RawReceipt = {
   store: string | null;
   date: string | null; // YYYY-MM-DD
   total: number | null; // grand total actually paid
+  vat?: number | null; // VAT amount printed on the receipt, whether added on top or already included
   lines: RawLine[];
 };
 
@@ -51,9 +52,10 @@ export const receiptSchema = (priceOptional = false) => ({
     store: { type: 'string', nullable: true, description: 'Shop name, or null' },
     date: { type: 'string', nullable: true, description: 'Purchase date as YYYY-MM-DD, or null if unknown' },
     total: { type: 'number', nullable: true, description: 'Grand total paid including VAT, or null' },
+    vat: { type: 'number', nullable: true, description: 'VAT amount printed on the receipt (added on top or included), or null' },
     lines: { type: 'array', items: lineSchema(priceOptional) },
   },
-  required: ['store', 'date', 'total', 'lines'],
+  required: ['store', 'date', 'total', 'vat', 'lines'],
 });
 
 /** How to turn one product or charge into a line: shared by photos and typed purchases */
@@ -98,7 +100,10 @@ export function buildScanPrompt(c: Catalog, source: keyof typeof SOURCES = 'phot
 
 Rules:
 - One entry per product line, plus one entry per charge or order discount (see kind). Skip subtotal, total, payment method,
-  change, loyalty points, VAT summaries of prices that already include VAT, and header/footer lines.
+  change, loyalty points and header/footer lines.
+- VAT: when the receipt shows a subtotal and then VAT that brings it up to the total (subtotal + VAT = total), the VAT was
+  added on top: add a "tax" line with that amount. When the prices already include it (the total equals the sum of the
+  products, or it says VAT included), there is no tax line. Either way, put the VAT amount printed on the receipt in vat.
 - If a discount or promotion line applies to the product above it, subtract it from that product's line_total.
 - The lines must add up to the total paid: check it before answering.
 - raw_text: the product line exactly as printed.
