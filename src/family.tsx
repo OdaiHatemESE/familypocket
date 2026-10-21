@@ -16,6 +16,7 @@ type ExpenseInput = { amount: number; note: string; categoryId: string; date: st
 type ItemInput = { id?: string; categoryId: string; name: string; unit: string; group?: string };
 
 export type ScanLine = {
+  kind?: import('./lineKinds').LineKind;
   raw: string;
   itemId: string | null;
   name: string;
@@ -142,12 +143,15 @@ const toCategory = (r: any): Category => ({
   id: r.id, name: r.name, icon: r.icon, color: r.color, monthlyBudget: Number(r.monthly_budget) || 0, sort: r.sort ?? 0,
 });
 const toLine = (r: any): ExpenseLine => ({
-  id: r.id, itemId: r.item_id, categoryId: r.category_id, name: r.name, unit: r.unit, quantity: Number(r.quantity) || 0, amount: Number(r.amount) || 0,
+  id: r.id, kind: r.kind ?? 'item', itemId: r.item_id, categoryId: r.category_id, name: r.name, unit: r.unit, quantity: Number(r.quantity) || 0, amount: Number(r.amount) || 0,
 });
+const CHARGE_ORDER = ['tax', 'service', 'delivery', 'tip', 'fee', 'discount', 'adjust'];
+const lineOrder = (l: ExpenseLine) => (!l.kind || l.kind === 'item' ? 0 : 1 + CHARGE_ORDER.indexOf(l.kind));
 const toExpense = (r: any): Expense => ({
   id: r.id, userId: r.user_id, createdBy: r.created_by ?? r.user_id, categoryId: r.category_id, fixedId: r.fixed_id, amount: Number(r.amount) || 0,
   note: r.note ?? '', date: r.spent_on, createdAt: Date.parse(r.created_at) || 0,
-  lines: (r.expense_items ?? []).map(toLine).sort((a: ExpenseLine, b: ExpenseLine) => b.amount - a.amount),
+  // Products first, largest first; then charges (VAT, delivery…) in a fixed order
+  lines: (r.expense_items ?? []).map(toLine).sort((a: ExpenseLine, b: ExpenseLine) => lineOrder(a) - lineOrder(b) || b.amount - a.amount),
 });
 const toItem = (r: any): Item => ({ id: r.id, categoryId: r.category_id, name: r.name, group: r.group_name || r.name, unit: r.unit, archived: !!r.archived });
 const toFixed = (r: any): FixedExpense => ({
@@ -320,7 +324,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     const memberOf = (id: string | null) => profiles.find((m) => m.id === id);
 
     const lineRow = (expenseId: string, l: ExpenseLine) => ({
-      expense_id: expenseId, item_id: l.itemId, category_id: l.categoryId, name: l.name, unit: l.unit, quantity: l.quantity, amount: l.amount,
+      expense_id: expenseId, kind: l.kind ?? 'item', item_id: l.itemId, category_id: l.categoryId, name: l.name, unit: l.unit, quantity: l.quantity, amount: l.amount,
     });
     const expenseRow = (e: ExpenseInput) => ({
       amount: e.amount, note: e.note, category_id: e.categoryId, spent_on: e.date, fixed_id: e.fixedId ?? null,

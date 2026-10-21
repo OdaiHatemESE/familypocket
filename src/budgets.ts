@@ -75,6 +75,7 @@ export function itemStats(month: string, prevMonth: string, expenses: Expense[])
     for (const e of expenses) {
       if (!e.date.startsWith(m)) continue;
       for (const l of e.lines) {
+        if (l.kind && l.kind !== 'item') continue; // charges are summed apart (chargeTotals)
         const key = l.itemId ?? `${l.name}|${l.unit}`;
         const cur = map.get(key) ?? { itemId: l.itemId, name: l.name, unit: l.unit, categoryId: l.categoryId, quantity: 0, amount: 0, purchases: 0 };
         cur.quantity += l.quantity;
@@ -98,6 +99,22 @@ export function itemStats(month: string, prevMonth: string, expenses: Expense[])
       };
     })
     .sort((a, b) => b.amount - a.amount);
+}
+
+/** VAT, service, delivery, tips, fees and discounts paid on receipts in a month, by kind */
+export function chargeTotals(month: string, expenses: Expense[]): { kind: string; amount: number; count: number }[] {
+  const by = new Map<string, { amount: number; count: number }>();
+  for (const e of expenses) {
+    if (!e.date.startsWith(month)) continue;
+    for (const l of e.lines) {
+      if (!l.kind || l.kind === 'item') continue;
+      const c = by.get(l.kind) ?? { amount: 0, count: 0 };
+      c.amount += l.amount;
+      c.count += 1;
+      by.set(l.kind, c);
+    }
+  }
+  return [...by.entries()].map(([kind, v]) => ({ kind, ...v })).sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 }
 
 /** "2 علبة", "1.5 كيلو" */

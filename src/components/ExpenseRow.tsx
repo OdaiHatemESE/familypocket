@@ -19,9 +19,10 @@ export function ExpenseRow({
   onPress: () => void;
   last?: boolean;
 }) {
-  const items = e.lines.length ? (e.lines.length === 1 ? 'صنف واحد' : `${e.lines.length} أصناف`) : null;
+  const products = e.lines.filter((l) => !l.kind || l.kind === 'item');
+  const items = products.length ? (products.length === 1 ? 'صنف واحد' : `${products.length} أصناف`) : null;
   const sub = [items, e.note && !items ? cat?.name : null, showMember ? member?.displayName ?? 'عضو سابق' : null].filter(Boolean).join('، ');
-  const title = e.note || (e.lines.length ? e.lines.map((l) => l.name).slice(0, 2).join('، ') : cat?.name) || 'بدون تصنيف';
+  const title = e.note || (products.length ? products.map((l) => l.name).slice(0, 2).join('، ') : cat?.name) || 'بدون تصنيف';
   return (
     <Pressable
       onPress={onPress}

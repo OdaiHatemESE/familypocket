@@ -8,6 +8,7 @@ import { C, F, TS } from '../theme';
 import { Expense, ExpenseLine, Item, ReceiptPrefill, UNITS } from '../types';
 import { Avatar, CatTile, ErrorText, HScroll, Icon, IconName, Money, PrimaryButton, Row, T } from '../ui';
 import { dayLabel, num, parseAmount, shortDay, toKey } from '../utils';
+import { ADDABLE, chargeOf, ChargeKind, isCharge, LineKind, signed } from '../lineKinds';
 import { CategoryPicker, GroupField, UnitPicker } from './ItemSheet';
 import { Sheet } from './Sheet';
 
@@ -52,7 +53,7 @@ export function ExpenseSheet(props: Props) {
 }
 
 type View_ = 'main' | 'pick' | 'line';
-type Draft = { index: number | null; itemId: string | null; name: string; group: string; unit: string; categoryId: string; qty: string; amount: string; raw?: string };
+type Draft = { index: number | null; kind: LineKind; itemId: string | null; name: string; group: string; unit: string; categoryId: string; qty: string; amount: string; raw?: string };
 
 function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
   const { categories, items, expenses, me, members, memberOf, addExpense, updateExpense, deleteExpense, saveItem, scanReceipt, learnAliases } = useFamily();
@@ -120,11 +121,12 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
     let data;
     let finalLines: ExpenseLine[] = [];
     if (mode === 'receipt') {
-      if (!lines.length) return setError('أضف صنف واحد على الأقل للفاتورة');
-      const noCat = lines.findIndex((l) => !l.categoryId);
+      if (!lines.some((l) => !isCharge(l.kind))) return setError('أضف صنف واحد على الأقل للفاتورة');
+      const noCat = lines.findIndex((l) => !isCharge(l.kind) && !l.categoryId);
       if (noCat >= 0) return setError(`اختر تصنيف «${lines[noCat].name}» قبل الحفظ`);
       const noPrice = lines.findIndex((l) => l.needsPrice);
       if (noPrice >= 0) return setError(`اكتب سعر «${lines[noPrice].name}» قبل الحفظ`);
+      if (!(lines.reduce((a, l) => a + l.amount, 0) > 0)) return setError('مجموع الفاتورة لازم يكون أكثر من صفر');
     } else {
       const n = parseFloat(amount);
       if (!(n > 0)) return setError('اكتب المبلغ أولاً');
@@ -134,25 +136,26 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
     setBusy(true);
     try {
       if (mode === 'receipt') {
-        // Lines read from a photo may name items the family doesn't have yet: add them first
+        // Lines read from a photo may name items the family doesn't have yet: add them first (charges are not items)
         finalLines = [];
         for (const l of lines) {
-          if (l.itemId) finalLines.push(l);
+          if (l.itemId || isCharge(l.kind)) finalLines.push(l);
           else {
             const it = await saveItem({ name: l.name, categoryId: l.categoryId, unit: l.unit, group: l.group });
             finalLines.push({ ...l, itemId: it.id });
           }
         }
-        const total = finalLines.reduce((a, l) => a + l.amount, 0);
-        // The receipt's main category is the one with the largest share
+        // The receipt's main category is the one with the largest share of its products; charges count towards it
         const byCat = new Map<string, number>();
-        finalLines.forEach((l) => byCat.set(l.categoryId, (byCat.get(l.categoryId) ?? 0) + l.amount));
+        finalLines.filter((l) => !isCharge(l.kind)).forEach((l) => byCat.set(l.categoryId, (byCat.get(l.categoryId) ?? 0) + l.amount));
         const mainCat = [...byCat.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        finalLines = finalLines.map((l) => (isCharge(l.kind) && !l.categoryId ? { ...l, categoryId: mainCat } : l));
+        const total = finalLines.reduce((a, l) => a + l.amount, 0);
         data = { amount: Math.round(total * 100) / 100, note: note.trim(), categoryId: mainCat, date, fixedId: editing?.fixedId ?? null, lines: finalLines, userId: ownerId };
       }
       if (editing) await updateExpense(editing.id, data!);
       else await addExpense(data!);
-      const learned = finalLines.filter((l) => l.raw && l.itemId).map((l) => ({ raw: l.raw!, itemId: l.itemId! }));
+      const learned = finalLines.filter((l) => l.raw && l.itemId && !isCharge(l.kind)).map((l) => ({ raw: l.raw!, itemId: l.itemId! }));
       if (learned.length) learnAliases(learned).catch(() => {});
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       onClose();
@@ -169,6 +172,7 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
     try {
       const d = await scanReceipt(files);
       const got: ExpenseLine[] = d.lines.map((l) => ({
+        kind: l.kind ?? 'item',
         itemId: l.itemId,
         name: l.name,
         group: l.group,
@@ -271,7 +275,7 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
         return;
       }
       const last = usage.last.get(it.id);
-      setDraft({ index: null, itemId: it.id, name: it.name, group: it.group, unit: it.unit, categoryId: it.categoryId, qty: '1', amount: last ? String(Math.round(last.price * 100) / 100) : '' });
+      setDraft({ index: null, kind: 'item', itemId: it.id, name: it.name, group: it.group, unit: it.unit, categoryId: it.categoryId, qty: '1', amount: last ? String(Math.round(last.price * 100) / 100) : '' });
       setView('line');
     };
     const createItem = async () => {
@@ -381,6 +385,103 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
     );
   }
 
+  // ───── charge editor (VAT, service, delivery, tip, fee, discount, correction) ─────
+  if (view === 'line' && draft && isCharge(draft.kind)) {
+    const kind = draft.kind as ChargeKind;
+    const info = chargeOf(kind)!;
+    const value = parseFloat(draft.amount.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660)).replace(',', '.'));
+    const commit = () => {
+      if (!isFinite(value) || value === 0) return setError('اكتب المبلغ');
+      const line: ExpenseLine = {
+        kind, itemId: null, name: draft.name.trim() || info.label, unit: 'حبة', categoryId: draft.categoryId,
+        quantity: 1, amount: Math.round(signed(kind, value) * 100) / 100, raw: draft.raw, uncertain: false, needsPrice: false,
+      };
+      setLines((ls) => (draft.index === null ? [...ls, line] : ls.map((l, i) => (i === draft.index ? { ...l, ...line } : l))));
+      setDraft(null);
+      setError('');
+      setView('main');
+    };
+    const kinds = kind === 'adjust' ? [...ADDABLE, info] : ADDABLE;
+    return (
+      <Sheet
+        visible={visible}
+        onClose={onClose}
+        title={draft.index === null ? 'رسوم أو خصم' : info.label}
+        footer={
+          <View>
+            <ErrorText text={error} />
+            <View style={{ height: 10 }} />
+            <PrimaryButton label={draft.index === null ? 'أضف للفاتورة' : 'حفظ السطر'} onPress={commit} />
+            <Pressable
+              onPress={() => {
+                if (draft.index !== null) setLines((ls) => ls.filter((_, i) => i !== draft.index));
+                setDraft(null);
+                setError('');
+                setView('main');
+              }}
+              style={{ paddingVertical: 12 }}
+            >
+              <T size={TS.small} w="medium" color={draft.index === null ? C.oasis : C.pom} align="center">
+                {draft.index === null ? 'رجوع للفاتورة' : 'احذف السطر من الفاتورة'}
+              </T>
+            </Pressable>
+          </View>
+        }
+      >
+        {kind === 'adjust' && (
+          <T size={TS.small} color={C.sub} style={{ marginTop: 4 }}>
+            هاد الفرق بين الأسطر اللي انقرت ومجموع الفاتورة. إذا عرفت شو هو اختر نوعه، وإذا كان غلط بالقراءة احذفه وصلّح السطر الغلط.
+          </T>
+        )}
+        <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 12, marginBottom: 8 }}>النوع</T>
+        <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8 }}>
+          {kinds.map((k) => {
+            const on = k.key === kind;
+            return (
+              <Pressable
+                key={k.key}
+                onPress={() => setDraft({ ...draft, kind: k.key, name: draft.name === info.label || !draft.name ? k.label : draft.name })}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: on }}
+                style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, backgroundColor: on ? C.ink : C.paper }}
+              >
+                <Icon name={k.icon} size={16} color={on ? '#fff' : C.ink} />
+                <T size={TS.small} w={on ? 'semibold' : 'regular'} color={on ? '#fff' : C.text}>{k.label}</T>
+              </Pressable>
+            );
+          })}
+        </View>
+        {(kind === 'fee' || kind === 'discount') && (
+          <>
+            <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>الاسم (اختياري)</T>
+            <TextInput
+              value={draft.name === info.label ? '' : draft.name}
+              onChangeText={(t) => setDraft({ ...draft, name: t })}
+              placeholder={kind === 'fee' ? 'مثلاً: رسوم الطلب الصغير، كيس' : 'مثلاً: كود الخصم'}
+              placeholderTextColor={C.faint}
+              style={inputStyle}
+            />
+          </>
+        )}
+        <T w="semibold" size={TS.small} color={C.sub} style={{ marginTop: 16, marginBottom: 8 }}>
+          {kind === 'discount' ? 'قيمة الخصم (درهم)' : 'المبلغ (درهم)'}
+        </T>
+        <TextInput
+          value={draft.amount}
+          onChangeText={(t) => setDraft({ ...draft, amount: t })}
+          keyboardType={kind === 'adjust' ? 'numbers-and-punctuation' : 'decimal-pad'}
+          placeholder="0"
+          placeholderTextColor={C.faint}
+          accessibilityLabel="المبلغ"
+          autoFocus={!draft.amount}
+          style={{ ...inputStyle, fontFamily: F.bold, fontSize: 28, textAlign: 'center', paddingVertical: 12 }}
+        />
+        {kind === 'discount' && <T size={TS.tiny} color={C.sub} align="center" style={{ marginTop: 8 }}>بينطرح من مجموع الفاتورة.</T>}
+        <View style={{ height: 12 }} />
+      </Sheet>
+    );
+  }
+
   // ───── line editor (quantity + total price) ─────
   if (view === 'line' && draft) {
     const qty = parseAmount(draft.qty) || 0;
@@ -394,7 +495,7 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
       if (!draft.itemId && !draft.name.trim()) return setError('اكتب اسم الصنف');
       if (!draft.categoryId) return setError('اختر تصنيف الصنف');
       const line: ExpenseLine = {
-        itemId: draft.itemId, name: draft.name.trim(), group: draft.group.trim() || undefined, unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt,
+        kind: 'item', itemId: draft.itemId, name: draft.name.trim(), group: draft.group.trim() || undefined, unit: draft.unit, categoryId: draft.categoryId, quantity: qty, amount: amt,
         raw: draft.raw, uncertain: false, needsPrice: false,
       };
       setLines((ls) => (draft.index === null ? [...ls, line] : ls.map((l, i) => (i === draft.index ? { ...l, ...line } : l))));
@@ -698,7 +799,7 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
               lines={lines}
               onPress={(i) => {
                 const l = lines[i];
-                setDraft({ index: i, itemId: l.itemId, name: l.name, group: l.group ?? '', unit: UNITS.includes(l.unit as (typeof UNITS)[number]) ? l.unit : 'حبة', categoryId: l.categoryId, qty: String(l.quantity), amount: String(l.amount), raw: l.raw });
+                setDraft({ index: i, kind: l.kind ?? 'item', itemId: l.itemId, name: l.name, group: l.group ?? '', unit: UNITS.includes(l.unit as (typeof UNITS)[number]) ? l.unit : 'حبة', categoryId: l.categoryId, qty: String(l.quantity), amount: String(isCharge(l.kind) && l.kind !== 'adjust' ? Math.abs(l.amount) : l.amount), raw: l.raw });
                 setView('line');
               }}
             />
@@ -714,6 +815,20 @@ function ExpenseForm({ visible, onClose, editing, prefill, forMember }: Props) {
             <Icon name="plus" size={20} color={C.oasis} />
             <T w="semibold" color={C.oasis}>{lines.length ? 'أضف صنف ثاني' : 'أضف أول صنف'}</T>
           </Pressable>
+          {lines.length > 0 && (
+            <Pressable
+              onPress={() => {
+                setError('');
+                setDraft({ index: null, kind: 'delivery', itemId: null, name: chargeOf('delivery')!.label, group: '', unit: 'حبة', categoryId: '', qty: '1', amount: '' });
+                setView('line');
+              }}
+              accessibilityRole="button"
+              style={{ flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12 }}
+            >
+              <Icon name="cash-plus" size={18} color={C.sub} />
+              <T size={TS.small} w="medium" color={C.sub}>أضف ضريبة أو رسوم أو خصم</T>
+            </Pressable>
+          )}
         </>
       )}
 
@@ -802,9 +917,18 @@ function LinesList({ lines, onPress }: { lines: ExpenseLine[]; onPress?: (i: num
           disabled={!onPress}
           style={{
             flexDirection: 'row-reverse', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderTopWidth: i ? 1 : 0, borderColor: C.line,
-            borderRightWidth: onPress && (l.uncertain || !l.categoryId || l.needsPrice) ? 3 : 0, borderRightColor: C.saffron,
+            borderRightWidth: onPress && (isCharge(l.kind) ? l.kind === 'adjust' : l.uncertain || !l.categoryId || l.needsPrice) ? 3 : 0, borderRightColor: C.saffron,
           }}
         >
+          {isCharge(l.kind) ? (
+            <View style={{ flex: 1, flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+              <Icon name={chargeOf(l.kind)?.icon ?? 'cash'} size={18} color={l.kind === 'adjust' ? C.saffron : C.sub} />
+              <View style={{ flex: 1 }}>
+                <T w="medium" color={C.sub} numberOfLines={1}>{l.name}</T>
+                {onPress && l.kind === 'adjust' && <T size={TS.tiny} color={C.saffron}>راجع هذا السطر</T>}
+              </View>
+            </View>
+          ) : (
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 6 }}>
               <T w="medium" style={{ flexShrink: 1 }} numberOfLines={1}>{l.name}</T>
@@ -824,6 +948,7 @@ function LinesList({ lines, onPress }: { lines: ExpenseLine[]; onPress?: (i: num
                   : `${qtyLabel(l.quantity, l.unit)}${l.quantity > 0 ? `، ${num(l.amount / l.quantity)} للـ${l.unit}` : ''}`}
             </T>
           </View>
+          )}
           <Money value={l.amount} decimals />
           {onPress && <Icon name="chevron-left" size={18} color={C.faint} />}
         </Pressable>

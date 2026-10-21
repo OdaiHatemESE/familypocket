@@ -7,7 +7,7 @@ const AR_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'ما
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const monthName = (m: string) => `${AR_MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
 
-type Line = { item_id: string | null; category_id: string; name: string; unit: string; quantity: number; amount: number };
+type Line = { kind?: string; item_id: string | null; category_id: string; name: string; unit: string; quantity: number; amount: number };
 type Exp = {
   user_id: string | null; category_id: string; fixed_id: string | null; amount: number; note: string; spent_on: string;
   expense_items: Line[] | null;
@@ -26,7 +26,7 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
     supabase.from('profiles').select('id, display_name, active'),
     supabase
       .from('expenses')
-      .select('user_id, category_id, fixed_id, amount, note, spent_on, expense_items(item_id, category_id, name, unit, quantity, amount)')
+      .select('user_id, category_id, fixed_id, amount, note, spent_on, expense_items(kind, item_id, category_id, name, unit, quantity, amount)')
       .gte('spent_on', from)
       .order('spent_on', { ascending: false })
       .limit(6000),
@@ -73,6 +73,7 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
   const months = new Map<string, MonthAgg>();
   const items = new Map<string, Map<string, { qty: number; amount: number; times: number; unit: string; cat: string; group: string }>>();
   const types = new Map<string, Map<string, { amount: number; times: number; names: Set<string> }>>();
+  const charges = new Map<string, Map<string, { amount: number; times: number }>>();
   for (const e of expenses) {
     const m = e.spent_on.slice(0, 7);
     if (!months.has(m)) months.set(m, { total: 0, count: 0, byCat: new Map(), byMember: new Map(), byMemberCat: new Map(), byBucket: new Map() });
@@ -87,6 +88,15 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
       add(a.byMemberCat, `${o}|${c}`, v);
     }
     for (const l of e.expense_items ?? []) {
+      // VAT, service, delivery, tips, fees and discounts are reported on their own, not as items
+      if (l.kind && l.kind !== 'item') {
+        if (!charges.has(m)) charges.set(m, new Map());
+        const c = charges.get(m)!.get(l.kind) ?? { amount: 0, times: 0 };
+        c.amount += Number(l.amount);
+        c.times += 1;
+        charges.get(m)!.set(l.kind, c);
+        continue;
+      }
       const name = (l.item_id && itemName.get(l.item_id)) || l.name;
       if (!items.has(m)) items.set(m, new Map());
       const key = `${name}|${l.unit}`;
@@ -126,6 +136,12 @@ export async function buildFacts(supabase: SupabaseClient, categories: CatalogCa
       const [u, c] = k.split('|');
       out.push(`${monthName(m)} | ${who(u)} | ${catName.get(c) ?? '?'} | ${r2(v)}`);
     }
+  }
+
+  const CHARGE: Record<string, string> = { tax: 'VAT', service: 'service charge', delivery: 'delivery fees', tip: 'tips', fee: 'other fees', discount: 'order discounts (negative)', adjust: 'corrections to match receipt totals' };
+  out.push('\nFEES, TAXES AND DISCOUNTS ON RECEIPTS (month | kind | AED | number of receipts):');
+  for (const m of monthKeys) {
+    for (const [k, v] of charges.get(m) ?? []) out.push(`${monthName(m)} | ${CHARGE[k] ?? k} | ${r2(v.amount)} | ${v.times}`);
   }
 
   // Variants (خبز أبيض، خبز أسمر) are separate items that share a type (خبز): questions about "خبز" mean the type

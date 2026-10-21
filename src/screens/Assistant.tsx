@@ -66,6 +66,7 @@ export function Assistant() {
   const review = (m: Extract<Msg, { role: 'assistant' }>) => {
     if (!m.draft) return;
     const lines: ExpenseLine[] = m.draft.lines.map((l) => ({
+      kind: l.kind ?? 'item',
       itemId: l.itemId,
       name: l.name,
       group: l.group,
@@ -229,13 +230,15 @@ function DraftCard({ draft, onReview }: { draft: Extract<AssistantReply, { kind:
           <View style={{ flex: 1 }}>
             <Row style={{ gap: 6 }}>
               <T w="medium" numberOfLines={1} style={{ flexShrink: 1 }}>{l.name}</T>
-              {!l.itemId && (
+              {!l.itemId && (!l.kind || l.kind === 'item') && (
                 <View style={{ backgroundColor: C.oasis + '18', borderRadius: 999, paddingHorizontal: 6 }}>
                   <T size={TS.tiny} w="semibold" color={C.oasis}>جديد</T>
                 </View>
               )}
             </Row>
-            <T size={TS.tiny} color={C.sub}>{qtyLabel(l.quantity, l.unit)}{l.amount > 0 && l.quantity > 0 ? `، ${num(l.amount / l.quantity)} للـ${l.unit}` : ''}</T>
+            {(!l.kind || l.kind === 'item') && (
+              <T size={TS.tiny} color={C.sub}>{qtyLabel(l.quantity, l.unit)}{l.amount > 0 && l.quantity > 0 ? `، ${num(l.amount / l.quantity)} للـ${l.unit}` : ''}</T>
+            )}
           </View>
           {l.needsPrice ? <T size={TS.small} w="semibold" color={C.saffron}>بدون سعر</T> : <Money value={l.amount} decimals size={TS.small} />}
         </Row>

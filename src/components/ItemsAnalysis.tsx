@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Pressable, View } from 'react-native';
-import { ItemStat, itemStats, qtyLabel } from '../budgets';
+import { chargeTotals, ItemStat, itemStats, qtyLabel } from '../budgets';
+import { chargeOf, LineKind } from '../lineKinds';
 import { useFamily } from '../family';
 import { C, TS } from '../theme';
 import { Expense } from '../types';
@@ -12,6 +13,7 @@ export function ItemsAnalysis({ month, expenses }: { month: string; expenses: Ex
   const { categories, items } = useFamily();
   const prev = shiftMonth(month, -1);
   const stats = useMemo(() => itemStats(month, prev, expenses), [month, prev, expenses]);
+  const charges = useMemo(() => chargeTotals(month, expenses), [month, expenses]);
   const [cat, setCat] = useState<string | null>(null);
   const [all, setAll] = useState(false);
   const [open, setOpen] = useState<Set<string>>(new Set());
@@ -88,6 +90,22 @@ export function ItemsAnalysis({ month, expenses }: { month: string; expenses: Ex
               <Money value={total} w="bold" />
             </Row>
           </Card>
+
+          {charges.length > 0 && (
+            <Card style={{ padding: 14, marginTop: 12, gap: 10 }}>
+              <T w="semibold" size={TS.small}>الضرائب والرسوم والخصومات</T>
+              {charges.map((c) => (
+                <Row key={c.kind} style={{ gap: 8 }}>
+                  <Icon name={chargeOf(c.kind as LineKind)?.icon ?? 'cash'} size={18} color={c.amount < 0 ? C.oasis : C.sub} />
+                  <T size={TS.small} style={{ flex: 1 }}>
+                    {chargeOf(c.kind as LineKind)?.label ?? c.kind}
+                    <T size={TS.tiny} color={C.sub}>{`  ${c.count === 1 ? 'فاتورة وحدة' : `${c.count} فواتير`}`}</T>
+                  </T>
+                  <Money value={c.amount} decimals size={TS.small} color={c.amount < 0 ? C.oasis : C.text} />
+                </Row>
+              ))}
+            </Card>
+          )}
 
           {moves.length > 0 && (
             <Card style={{ padding: 14, marginTop: 12, gap: 8 }}>

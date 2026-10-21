@@ -5,8 +5,13 @@ export type CatalogItem = { id: string; name: string; unit: string; category_id:
 export type CatalogCategory = { id: string; name: string };
 export type Catalog = { items: CatalogItem[]; categories: CatalogCategory[]; units: string[] };
 
+/** A product, or a charge that changes what was paid (VAT on top, service, delivery, tip, other fee, order discount) */
+export const LINE_KINDS = ['item', 'tax', 'service', 'delivery', 'tip', 'fee', 'discount'] as const;
+export type LineKind = (typeof LINE_KINDS)[number] | 'adjust';
+
 /** What the model returns, before the server validates it */
 export type RawLine = {
+  kind: LineKind;
   raw_text: string; // the line exactly as printed (or the words the user used)
   quantity: number;
   unit: string;
@@ -27,6 +32,7 @@ export type RawReceipt = {
 const lineSchema = (priceOptional: boolean) => ({
   type: 'object',
   properties: {
+    kind: { type: 'string', enum: [...LINE_KINDS] },
     raw_text: { type: 'string' },
     quantity: { type: 'number' },
     unit: { type: 'string' },
@@ -36,7 +42,7 @@ const lineSchema = (priceOptional: boolean) => ({
     category_id: { type: 'string', nullable: true },
     uncertain: { type: 'boolean' },
   },
-  required: ['raw_text', 'quantity', 'unit', 'line_total', 'name', 'group', 'category_id', 'uncertain'],
+  required: ['kind', 'raw_text', 'quantity', 'unit', 'line_total', 'name', 'group', 'category_id', 'uncertain'],
 });
 
 export const receiptSchema = (priceOptional = false) => ({
@@ -50,8 +56,15 @@ export const receiptSchema = (priceOptional = false) => ({
   required: ['store', 'date', 'total', 'lines'],
 });
 
-/** How to turn one product into a line: shared by photos and typed purchases */
-export const lineRules = (units: string[]) => `- quantity: the count or weight bought (e.g. 2, 1.25). Weighed items use their weight. Default to 1 when not given.
+/** How to turn one product or charge into a line: shared by photos and typed purchases */
+export const lineRules = (units: string[]) => `- kind: "item" for a product. Every charge or discount that changes what was paid is a line of its own:
+  "tax" = VAT added ON TOP of the prices; "service" = service charge; "delivery" = delivery fee; "tip" = tip;
+  "fee" = any other fee (small order fee, packaging, bag charge, card or booking fee); "discount" = a discount or promo on
+  the whole order, with a NEGATIVE line_total. A discount printed under one product is not a line: subtract it from that
+  product. When the receipt says prices already include VAT ("VAT included", "incl. VAT", "شامل الضريبة"), there is no tax
+  line. For a charge line: quantity 1, unit حبة, name in Arabic ("ضريبة القيمة المضافة", "رسوم الخدمة", "رسوم التوصيل",
+  "بقشيش", the fee's own name, "خصم" or the promo's name), group the same as name, category_id null.
+- quantity: the count or weight bought (e.g. 2, 1.25). Weighed items use their weight. Default to 1 when not given.
 - unit: choose one of: ${units.join('، ')}. Count packaged products by the pack, not by the size printed in their name:
   "JUICE 1.75L" bought once is quantity 1, unit عبوة; "WATER 6x1.5L" is 1 كرتونة. Use كيلو or لتر only for products sold loose by weight or volume
   (e.g. "BANANA 1.120KG" is 1.12 كيلو). Tins and boxes → علبة. Bags → كيس. Bread → ربطة or رغيف. Otherwise → حبة.
@@ -84,8 +97,10 @@ export function buildScanPrompt(c: Catalog, source: keyof typeof SOURCES = 'phot
   return `You read shopping receipts for a family budgeting app in the UAE. ${SOURCES[source]}
 
 Rules:
-- One entry per product line. Skip subtotal, total, VAT/tax, payment, change, loyalty points, and header/footer lines.
-- If a discount or promotion line applies to the product above it, subtract it from that product's line_total. Never output discounts as lines.
+- One entry per product line, plus one entry per charge or order discount (see kind). Skip subtotal, total, payment method,
+  change, loyalty points, VAT summaries of prices that already include VAT, and header/footer lines.
+- If a discount or promotion line applies to the product above it, subtract it from that product's line_total.
+- The lines must add up to the total paid: check it before answering.
 - raw_text: the product line exactly as printed.
 ${lineRules(c.units)}
 - line_total: the amount paid for that line, as a number without currency.

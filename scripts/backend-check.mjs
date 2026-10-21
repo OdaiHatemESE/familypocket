@@ -149,6 +149,15 @@ const lines = await b.from('expense_items').insert([
   { expense_id: receipt.data.id, item_id: null, category_id: catId, name: 'QA bread', unit: 'ربطة', quantity: 1.5, amount: 15 },
 ]).select();
 ok(lines.data?.length === 2, 'member records a receipt with quantities', lines.error?.message);
+const chargeLines = await b.from('expense_items').insert([
+  { expense_id: receipt.data.id, kind: 'delivery', category_id: catId, name: 'رسوم التوصيل', unit: 'حبة', quantity: 1, amount: 7 },
+  { expense_id: receipt.data.id, kind: 'discount', category_id: catId, name: 'خصم', unit: 'حبة', quantity: 1, amount: -7 },
+]).select();
+ok(chargeLines.data?.length === 2, 'a receipt keeps a delivery fee and a negative discount as lines', chargeLines.error?.message);
+const negItem = await b.from('expense_items').insert({ expense_id: receipt.data.id, category_id: catId, name: 'x', unit: 'حبة', quantity: 1, amount: -5 });
+ok(!!negItem.error, 'a product line cannot be negative');
+const posDiscount = await b.from('expense_items').insert({ expense_id: receipt.data.id, kind: 'discount', category_id: catId, name: 'x', unit: 'حبة', quantity: 1, amount: 5 });
+ok(!!posDiscount.error, 'a discount line cannot be positive');
 const withLines = await a.from('expenses').select('id, expense_items(quantity, amount)').eq('id', receipt.data.id).single();
 ok(withLines.data?.expense_items?.length === 2, 'family sees receipt lines', JSON.stringify(withLines.error));
 const foreignLine = await a.from('expense_items').insert({ expense_id: receipt.data.id, category_id: catId, name: 'x', unit: 'حبة', quantity: 1, amount: 1 });
@@ -160,7 +169,7 @@ ok((otherLines.data?.length ?? 0) === 0, "another family cannot read this family
 const otherItems = await other.from('items').select('id').eq('category_id', catId);
 ok((otherItems.data?.length ?? 0) === 0, "another family cannot read this family's items");
 const replace = await b.from('expense_items').delete().eq('expense_id', receipt.data.id).select();
-ok(replace.data?.length === 2, 'member replaces their receipt lines when editing');
+ok(replace.data?.length === 4, 'member replaces their receipt lines when editing', String(replace.data?.length));
 
 // 5d. Learned receipt names and the receipt reader
 const al = await b.from('item_aliases').upsert({ alias: 'qa fairy lemon 750ml', item_id: item.data.id }, { onConflict: 'household_id,alias' }).select();
@@ -191,15 +200,18 @@ if (scanBody?.error === 'NOT_CONFIGURED') {
     note(`provider=${scanBody.provider} model=${scanBody.model} time=${ms}ms store=${scanBody.store} date=${scanBody.date} total=${scanBody.total} linesTotal=${scanBody.linesTotal}`);
     for (const l of scanBody.lines) note(`line: ${l.raw.replace(/\s+/g, " ")} → ${l.name} | ${l.quantity} ${l.unit} | ${l.amount} | item=${l.itemId ? 'existing' : 'new'}${l.learned ? ' (learned)' : ''}${l.uncertain ? ' (check)' : ''}`);
     for (const w of scanBody.warnings ?? []) note(`warning: ${w}`);
-    ok(scanBody.lines.length === 5, 'all 5 products found, discount and VAT not listed as items', String(scanBody.lines.length));
-    ok(Math.abs((scanBody.linesTotal ?? 0) - 91.39) < 0.02, 'lines add up to the amount paid (VAT spread)', String(scanBody.linesTotal));
+    const products = scanBody.lines.filter((l) => l.kind === 'item');
+    const tax = scanBody.lines.filter((l) => l.kind === 'tax');
+    ok(products.length === 5, 'all 5 products found, the promo taken off its product', String(products.length));
+    ok(tax.length === 1 && Math.abs(tax[0].amount - 4.35) < 0.01, 'VAT added on top becomes its own line (4.35)', JSON.stringify(tax));
+    ok(!scanBody.lines.some((l) => l.kind === 'adjust') && Math.abs((scanBody.linesTotal ?? 0) - 91.39) < 0.01, 'lines add up exactly to the amount paid, no correction line', String(scanBody.linesTotal));
     ok(scanBody.date === '2026-10-14', 'receipt date read', String(scanBody.date));
-    const soap = scanBody.lines.find((l) => /fairy/i.test(l.raw));
+    const soap = products.find((l) => /fairy/i.test(l.raw));
     ok((soap?.itemId === item.data.id || /جلي/.test(soap?.group ?? '')) && soap?.quantity === 2, "FAIRY is the family's دواء جلي (same item or its type), quantity 2", JSON.stringify(soap));
-    ok(scanBody.lines.every((l) => l.group), 'every line has a general type', JSON.stringify(scanBody.lines.map((l) => [l.name, l.group])));
-    const chicken = scanBody.lines.find((l) => /chicken/i.test(l.raw));
+    ok(products.every((l) => l.group), 'every product has a general type', JSON.stringify(products.map((l) => [l.name, l.group])));
+    const chicken = products.find((l) => /chicken/i.test(l.raw));
     ok(chicken && Math.abs(chicken.quantity - 1.25) < 0.01 && chicken.unit === 'كيلو', 'weighed item read as 1.25 كيلو', JSON.stringify(chicken));
-    const milk = scanBody.lines.find((l) => /milk/i.test(l.raw));
+    const milk = products.find((l) => /milk/i.test(l.raw));
     ok(milk && milk.quantity === 1 && milk.amount < 10.5, 'packaged item counted as 1 pack with its discount applied', JSON.stringify(milk));
     ok(scanBody.lines.every((l) => l.categoryId), 'every line given a family category', JSON.stringify(scanBody.lines.filter((l) => !l.categoryId).map((l) => l.raw)));
   }
@@ -213,8 +225,24 @@ if (scanBody?.error === 'NOT_CONFIGURED') {
     const res = await b.functions.invoke('scan-receipt', { body: { files } });
     let body = res.data;
     if (res.error) { try { body = await res.error.context.json(); } catch { body = { error: String(res.error) }; } }
-    note(`${label} (${Date.now() - t}ms): ${(body?.lines ?? []).map((l) => `${l.name}/${l.group} ${l.amount}`).join(' · ') || body?.message}`);
-    ok(body?.lines?.length === 5 && Math.abs((body?.linesTotal ?? 0) - 91.39) < 0.02, `receipt read from ${label}: 5 lines, 91.39 (overlap not counted twice)`, `${body?.lines?.length} ${body?.linesTotal} ${body?.message ?? ''}`);
+    note(`${label} (${Date.now() - t}ms): ${(body?.lines ?? []).map((l) => `${l.kind}:${l.name}/${l.group} ${l.amount}`).join(' · ') || body?.message}`);
+    const n = (body?.lines ?? []).filter((l) => l.kind === 'item').length;
+    ok(n === 5 && Math.abs((body?.linesTotal ?? 0) - 91.39) < 0.01, `receipt read from ${label}: 5 products, 91.39 exactly (overlap not counted twice)`, `${n} ${body?.linesTotal} ${body?.message ?? ''}`);
+  }
+  // A delivery order: prices include VAT, plus delivery and service fees and a promo code
+  {
+    const t = Date.now();
+    const res = await b.functions.invoke('scan-receipt', { body: { files: [{ data: part('receipt-delivery.jpg'), mimeType: 'image/jpeg' }] } });
+    let body = res.data;
+    if (res.error) { try { body = await res.error.context.json(); } catch { body = { error: String(res.error) }; } }
+    const ls = body?.lines ?? [];
+    note(`delivery order (${Date.now() - t}ms): ${ls.map((l) => `${l.kind}:${l.name} ${l.amount}`).join(' · ') || body?.message} | total ${body?.linesTotal}`);
+    const k = (kind) => ls.filter((l) => l.kind === kind);
+    ok(k('item').length === 3, 'delivery order: 3 products', String(k('item').length));
+    ok(k('delivery')[0]?.amount === 7 && k('service')[0]?.amount === 2.5, 'delivery fee 7 and service fee 2.50 read as their own lines', JSON.stringify(ls.filter((l) => l.kind !== 'item')));
+    ok(k('discount')[0]?.amount === -10, 'promo code read as a -10 discount line', JSON.stringify(k('discount')));
+    ok(k('tax').length === 0 && k('adjust').length === 0 && Math.abs((body?.linesTotal ?? 0) - 64.5) < 0.01, 'VAT included in prices adds no line, and the lines add up to 64.50', `${body?.linesTotal} ${JSON.stringify(k('tax'))}`);
+    ok(ls.filter((l) => l.kind !== 'item').every((l) => l.categoryId && l.categoryId === k('item')[0]?.categoryId), "charges counted in the order's main category", JSON.stringify(ls.map((l) => [l.kind, l.categoryId])));
   }
   const tooMany = await b.functions.invoke('scan-receipt', { body: { files: Array.from({ length: 7 }, () => ({ data: 'eA==', mimeType: 'image/jpeg' })) } });
   ok(tooMany.error?.context?.status === 413, 'more than 6 photos refused', String(tooMany.error?.context?.status));

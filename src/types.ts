@@ -46,9 +46,11 @@ export const UNITS = ['حبة', 'علبة', 'كيلو', 'غرام', 'لتر', '�
  */
 export type Item = { id: string; categoryId: string; name: string; group: string; unit: string; archived: boolean };
 
-/** One line on a receipt */
+/** One line on a receipt: a product, or a charge such as VAT, delivery or a discount (see lineKinds.ts) */
 export type ExpenseLine = {
   id?: string;
+  /** 'item' (a product) when absent */
+  kind?: import('./lineKinds').LineKind;
   /** Text printed on the receipt, when the line came from a photo (not stored on the line) */
   raw?: string;
   /** Read from a photo and not checked yet */
